@@ -107,6 +107,8 @@ const state = {
   contentCache: {},
   nextRangeRequestId: 1,
   pendingRangeRequestId: 0,
+  hunkCursorKey: null,
+  hunkCursorIndex: -1,
   lastRangeSwitchMs: null,
 };
 
@@ -784,6 +786,41 @@ function performReviewToggle(file) {
   renderAll({ preserveScroll: true });
 }
 
+function jumpToNextHunk(file) {
+  if (!diffEditor || !monacoApi) return;
+
+  const lineChanges = diffEditor.getLineChanges() || [];
+  if (lineChanges.length === 0) return;
+
+  const selection = fileSelection(file);
+  const cursorKey = `${state.mode}:${file.id}:${selection.from}:${selection.to}`;
+
+  if (state.hunkCursorKey !== cursorKey) {
+    state.hunkCursorKey = cursorKey;
+    state.hunkCursorIndex = -1;
+  }
+
+  const nextIndex = state.hunkCursorIndex + 1;
+  if (nextIndex >= lineChanges.length) {
+    return;
+  }
+
+  state.hunkCursorIndex = nextIndex;
+  const change = lineChanges[nextIndex];
+
+  const preferredLine = change.modifiedStartLineNumber > 0
+    ? change.modifiedStartLineNumber
+    : change.modifiedEndLineNumber > 0
+      ? change.modifiedEndLineNumber
+      : change.originalStartLineNumber > 0
+        ? change.originalStartLineNumber
+        : 1;
+
+  const modifiedEditor = diffEditor.getModifiedEditor();
+  modifiedEditor.revealLineInCenter(preferredLine);
+  modifiedEditor.setPosition({ lineNumber: preferredLine, column: 1 });
+}
+
 function showTextModal(options) {
   const backdrop = document.createElement("div");
   backdrop.className = "review-modal-backdrop";
@@ -1334,6 +1371,12 @@ window.addEventListener("keydown", (e) => {
 
   const file = activeFile();
   if (!file) return;
+
+  if (e.code === "Space" || e.key === " ") {
+    e.preventDefault();
+    jumpToNextHunk(file);
+    return;
+  }
 
   const selection = fileSelection(file);
   const floors = floorNodes(file);

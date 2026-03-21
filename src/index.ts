@@ -1,13 +1,130 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import { open, type GlimpseWindow } from "glimpseui";
+import { clearRepoCheckpoint, loadRepoCheckpoints, saveRepoCheckpoint } from "./checkpoints.js";
 import { getDiffReviewFiles } from "./git.js";
 import { composeReviewPrompt } from "./prompt.js";
-import type { ReviewSubmitPayload, ReviewWindowMessage } from "./types.js";
+import type {
+  DiffReviewFile,
+  DiffReviewWindowData,
+  ReviewCancelPayload,
+  ReviewCheckpointClearPayload,
+  ReviewCheckpointSavePayload,
+  ReviewRangeContentRequestPayload,
+  ReviewSubmitPayload,
+  ReviewWindowMessage,
+} from "./types.js";
 import { buildReviewHtml } from "./ui.js";
 
 function isSubmitPayload(value: ReviewWindowMessage): value is ReviewSubmitPayload {
   return value.type === "submit";
+}
+
+function isCancelPayload(value: ReviewWindowMessage): value is ReviewCancelPayload {
+  return value.type === "cancel";
+}
+
+function isCheckpointSavePayload(value: ReviewWindowMessage): value is ReviewCheckpointSavePayload {
+  return value.type === "checkpoint-save";
+}
+
+function isCheckpointClearPayload(value: ReviewWindowMessage): value is ReviewCheckpointClearPayload {
+  return value.type === "checkpoint-clear";
+}
+
+function isRangeContentRequestPayload(value: ReviewWindowMessage): value is ReviewRangeContentRequestPayload {
+  return value.type === "range-content-request";
+}
+
+function collectAllFiles(data: DiffReviewWindowData): DiffReviewFile[] {
+  const seen = new Set<string>();
+  const files: DiffReviewFile[] = [];
+
+  for (const mode of [data.modes.committed, data.modes.working]) {
+    for (const file of mode.files) {
+      if (seen.has(file.id)) continue;
+      seen.add(file.id);
+      files.push(file);
+    }
+  }
+
+  return files;
+}
+
+function applyCheckpointDefaults(data: DiffReviewWindowData, checkpoints: Map<string, string>): void {
+  for (const mode of [data.modes.committed, data.modes.working]) {
+    for (const file of mode.files) {
+      const checkpointSha = checkpoints.get(file.fileKey) ?? null;
+      const checkpointNode = file.revision.nodes.find((node) => node.kind === "commit" && node.sha === checkpointSha);
+      const workingTreeNode = file.revision.nodes.find((node) => node.kind === "working-tree");
+
+      file.revision.checkpointNodeId = checkpointNode?.id ?? null;
+      file.revision.defaultFromNodeId = file.revision.checkpointNodeId ?? "base";
+
+      if (mode.mode === "working") {
+        file.revision.defaultToNodeId = workingTreeNode?.id ?? file.revision.headNodeId;
+      } else {
+        file.revision.defaultToNodeId = file.revision.headNodeId;
+      }
+
+      file.oldContent = file.revision.nodeContents[file.revision.defaultFromNodeId] ?? "";
+      file.newContent = file.revision.nodeContents[file.revision.defaultToNodeId] ?? "";
+    }
+  }
+}
+
+function buildClientReviewData(fullData: DiffReviewWindowData): DiffReviewWindowData {
+  const cloneMode = (mode: DiffReviewWindowData["modes"]["committed"]) => ({
+    ...mode,
+    files: mode.files.map((file) => {
+      return {
+        ...file,
+        oldContent: "",
+        newContent: "",
+        revision: {
+          ...file.revision,
+          nodeContents: {},
+        },
+      };
+    }),
+  });
+
+  return {
+    repoRoot: fullData.repoRoot,
+    defaultMode: fullData.defaultMode,
+    modes: {
+      committed: cloneMode(fullData.modes.committed),
+      working: cloneMode(fullData.modes.working),
+    },
+    diagnostics: {
+      ...(fullData.diagnostics ?? {}),
+      committedFiles: fullData.modes.committed.files.length,
+      workingFiles: fullData.modes.working.files.length,
+    },
+  };
+}
+
+function findFileByModeAndId(data: DiffReviewWindowData, mode: "committed" | "working", fileId: string): DiffReviewFile | null {
+  return data.modes[mode].files.find((file) => file.id === fileId) ?? null;
+}
+
+function sendRangeContent(
+  window: GlimpseWindow,
+  payload: {
+    requestId: number;
+    mode: "committed" | "working";
+    fileId: string;
+    fromNodeId: string;
+    toNodeId: string;
+    oldContent: string;
+    newContent: string;
+  },
+): void {
+  const encoded = JSON.stringify(payload)
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
+  window.send(`window.__piDiffReviewReceiveRangeContent?.(JSON.parse(\`${encoded}\`));`);
 }
 
 type WaitingEditorResult = "escape" | "window-settled";
@@ -97,13 +214,31 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const { repoRoot, files } = await getDiffReviewFiles(pi, ctx.cwd);
-    if (files.length === 0) {
-      ctx.ui.notify("No git diff to review.", "info");
+    const fullReviewData = await getDiffReviewFiles(pi, ctx.cwd);
+    const checkpoints = await loadRepoCheckpoints(fullReviewData.repoRoot);
+    applyCheckpointDefaults(fullReviewData, checkpoints);
+
+    const allFiles = collectAllFiles(fullReviewData);
+    if (allFiles.length === 0) {
+      ctx.ui.notify("No changes to review.", "info");
       return;
     }
 
-    const html = buildReviewHtml({ repoRoot, files });
+    const clientReviewData = buildClientReviewData(fullReviewData);
+    clientReviewData.diagnostics = {
+      ...(clientReviewData.diagnostics ?? {}),
+      payloadBytes: Buffer.byteLength(JSON.stringify(clientReviewData), "utf8"),
+      committedFiles: clientReviewData.modes.committed.files.length,
+      workingFiles: clientReviewData.modes.working.files.length,
+    };
+
+    const html = buildReviewHtml(clientReviewData);
+    const payloadKb = Math.round((clientReviewData.diagnostics.payloadBytes ?? 0) / 1024);
+    ctx.ui.notify(
+      `Review payload: working ${clientReviewData.modes.working.files.length}, committed ${clientReviewData.modes.committed.files.length}, ${payloadKb}KB`,
+      "info",
+    );
+
     const window = open(html, {
       width: 1680,
       height: 1020,
@@ -136,7 +271,43 @@ export default function (pi: ExtensionAPI) {
         };
 
         const onMessage = (data: unknown): void => {
-          settle(data as ReviewWindowMessage);
+          const message = data as ReviewWindowMessage;
+
+          if (isCheckpointSavePayload(message)) {
+            saveRepoCheckpoint(fullReviewData.repoRoot, message.fileKey, message.commitSha).catch((error) => {
+              const text = error instanceof Error ? error.message : String(error);
+              ctx.ui.notify(`Failed to save checkpoint: ${text}`, "error");
+            });
+            return;
+          }
+
+          if (isCheckpointClearPayload(message)) {
+            clearRepoCheckpoint(fullReviewData.repoRoot, message.fileKey).catch((error) => {
+              const text = error instanceof Error ? error.message : String(error);
+              ctx.ui.notify(`Failed to clear checkpoint: ${text}`, "error");
+            });
+            return;
+          }
+
+          if (isRangeContentRequestPayload(message)) {
+            const file = findFileByModeAndId(fullReviewData, message.mode, message.fileId);
+            if (!file) return;
+
+            sendRangeContent(window, {
+              requestId: message.requestId,
+              mode: message.mode,
+              fileId: message.fileId,
+              fromNodeId: message.fromNodeId,
+              toNodeId: message.toNodeId,
+              oldContent: file.revision.nodeContents[message.fromNodeId] ?? "",
+              newContent: file.revision.nodeContents[message.toNodeId] ?? "",
+            });
+            return;
+          }
+
+          if (isSubmitPayload(message) || isCancelPayload(message)) {
+            settle(message);
+          }
         };
 
         const onClosed = (): void => {
@@ -173,7 +344,7 @@ export default function (pi: ExtensionAPI) {
       await waitingUI.promise;
       closeActiveWindow();
 
-      if (message == null || message.type === "cancel") {
+      if (message == null || isCancelPayload(message)) {
         ctx.ui.notify("Diff review cancelled.", "info");
         return;
       }
@@ -183,7 +354,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const prompt = composeReviewPrompt(files, message);
+      const prompt = composeReviewPrompt(allFiles, message);
       ctx.ui.setEditorText(prompt);
       ctx.ui.notify("Inserted diff review feedback into the editor.", "info");
     } catch (error) {

@@ -131,6 +131,10 @@
       <div id="repo-root" class="truncate text-[11px] text-review-muted"></div>
     </div>
     <div class="flex items-center gap-2">
+      <div class="inline-flex overflow-hidden rounded-md border border-review-border bg-review-panel text-xs">
+        <button id="mode-committed-button" class="cursor-pointer px-3 py-1.5 text-review-text hover:bg-[#21262d]">Committed</button>
+        <button id="mode-working-button" class="cursor-pointer border-l border-review-border px-3 py-1.5 text-review-text hover:bg-[#21262d]">Working tree</button>
+      </div>
       <div id="summary" class="max-w-[24rem] truncate text-[11px] text-review-muted"></div>
       <button id="overall-comment-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-medium text-review-text hover:bg-[#21262d]">Overall note</button>
       <button id="cancel-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-medium text-review-text hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30">Cancel</button>
@@ -144,16 +148,24 @@
   </aside>
 
   <main id="main-pane" class="flex min-h-0 min-w-0 flex-col bg-[#0d1117]">
-    <div class="flex items-center justify-between gap-4 border-b border-review-border bg-[#0d1117] px-4 py-2">
-      <div class="min-w-0">
-        <div id="current-file-label" class="truncate text-sm font-semibold text-white"></div>
-        <div class="mt-0.5 text-[11px] text-review-muted">Click a file in the sidebar to switch. Hover or click line numbers in the gutter to add an inline comment.</div>
+    <div class="flex flex-col gap-2 border-b border-review-border bg-[#0d1117] px-4 py-2">
+      <div class="flex items-center justify-between gap-4">
+        <div class="min-w-0">
+          <div id="current-file-label" class="truncate text-sm font-semibold text-white"></div>
+          <div id="range-summary" class="mt-0.5 text-[11px] text-review-muted">Select a file to review.</div>
+        </div>
+        <div class="flex items-center gap-3">
+          <button id="toggle-reviewed-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Mark reviewed through here</button>
+          <button id="clear-reviewed-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Clear reviewed state</button>
+          <button id="toggle-wrap-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Wrap lines: on</button>
+          <button id="toggle-unchanged-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Show changed areas only</button>
+          <button id="file-comment-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Add file comment</button>
+        </div>
       </div>
-      <div class="flex items-center gap-3">
-        <button id="toggle-reviewed-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Mark reviewed</button>
-        <button id="toggle-wrap-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Wrap lines: on</button>
-        <button id="toggle-unchanged-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Show changed areas only</button>
-        <button id="file-comment-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Add file comment</button>
+      <div id="review-notice" class="hidden rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200"></div>
+      <div id="revision-strip-container" class="rounded-md border border-review-border bg-[#010409] px-3 py-2">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-review-muted">Revision strip</div>
+        <div id="revision-strip" class="mt-2 space-y-2"></div>
       </div>
     </div>
     <div id="file-comments-container" class="hidden border-b border-review-border bg-[#0d1117] px-4 py-0"></div>

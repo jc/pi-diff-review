@@ -777,6 +777,17 @@ function performReviewToggle(file) {
   file.revision.checkpointNodeId = toNode.id;
   file.revision.defaultFromNodeId = toNode.id;
 
+  const commitNodes = file.revision.nodes.filter((node) => node.kind === "commit");
+  const currentCommitIndex = commitNodes.findIndex((node) => node.id === toNode.id);
+  const nextCommitNode = currentCommitIndex >= 0 && currentCommitIndex < commitNodes.length - 1
+    ? commitNodes[currentCommitIndex + 1]
+    : null;
+
+  setFileSelection(file, {
+    from: toNode.id,
+    to: nextCommitNode?.id ?? toNode.id,
+  });
+
   window.glimpse.send({
     type: "checkpoint-save",
     fileKey: file.fileKey,

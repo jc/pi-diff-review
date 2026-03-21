@@ -266,6 +266,26 @@ function setFileSelection(file, selection) {
   state.selections[selectionKey(file)] = clampSelection(file, selection);
 }
 
+function floorNodes(file) {
+  return file.revision.nodes.filter((node) => node.kind !== "working-tree");
+}
+
+function ceilingNodes(file) {
+  return file.revision.nodes;
+}
+
+function applyFloorSelection(file, nextFromNodeId) {
+  const selection = fileSelection(file);
+  setFileSelection(file, { ...selection, from: nextFromNodeId });
+  renderAll({ preserveScroll: true });
+}
+
+function applyCeilingSelection(file, nextToNodeId) {
+  const selection = fileSelection(file);
+  setFileSelection(file, { ...selection, to: nextToNodeId });
+  renderAll({ preserveScroll: true });
+}
+
 function humanizeNode(node) {
   if (!node) return "Unknown";
   if (node.kind === "base") return "Base";
@@ -718,6 +738,49 @@ function updateToggleButtons() {
   toggleUnchangedButton.textContent = state.hideUnchanged ? "Show full file" : "Show changed areas only";
   toggleWrapButton.textContent = `Wrap lines: ${state.wrapLines ? "on" : "off"}`;
   submitButton.disabled = false;
+}
+
+function performReviewToggle(file) {
+  const toggle = reviewToggleState(file);
+  if (toggle.disabled || toggle.action == null) return;
+
+  if (toggle.action === "clear") {
+    const checkpointNodeId = file.revision.checkpointNodeId;
+    if (!checkpointNodeId) return;
+
+    file.revision.checkpointNodeId = null;
+    file.revision.defaultFromNodeId = "base";
+
+    const workingNode = workingTreeNode(file);
+    const defaultToNodeId = state.mode === "working" && workingNode != null
+      ? workingNode.id
+      : file.revision.defaultToNodeId;
+
+    setFileSelection(file, { from: "base", to: defaultToNodeId });
+
+    window.glimpse.send({
+      type: "checkpoint-clear",
+      fileKey: file.fileKey,
+    });
+
+    renderAll({ preserveScroll: true });
+    return;
+  }
+
+  const selection = fileSelection(file);
+  const toNode = nodeById(file, selection.to);
+  if (!toNode || toNode.kind !== "commit") return;
+
+  file.revision.checkpointNodeId = toNode.id;
+  file.revision.defaultFromNodeId = toNode.id;
+
+  window.glimpse.send({
+    type: "checkpoint-save",
+    fileKey: file.fileKey,
+    commitSha: toNode.sha,
+  });
+
+  renderAll({ preserveScroll: true });
 }
 
 function showTextModal(options) {
@@ -1198,50 +1261,76 @@ toggleWrapButton.addEventListener("click", () => {
   });
 });
 
-toggleReviewedButton.addEventListener("click", () => {
+function isTypingTarget(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+window.addEventListener("keydown", (e) => {
   const file = activeFile();
   if (!file) return;
+  if (isTypingTarget(e.target)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.repeat) return;
+  if (document.querySelector(".review-modal-backdrop")) return;
 
-  const toggle = reviewToggleState(file);
-  if (toggle.disabled || toggle.action == null) return;
+  const selection = fileSelection(file);
+  const floors = floorNodes(file);
+  const ceilings = ceilingNodes(file);
+  const floorIndex = floors.findIndex((node) => node.id === selection.from);
+  const ceilingIndex = ceilings.findIndex((node) => node.id === selection.to);
 
-  if (toggle.action === "clear") {
-    const checkpointNodeId = file.revision.checkpointNodeId;
-    if (!checkpointNodeId) return;
-
-    file.revision.checkpointNodeId = null;
-    file.revision.defaultFromNodeId = "base";
-
-    const workingNode = workingTreeNode(file);
-    const defaultToNodeId = state.mode === "working" && workingNode != null
-      ? workingNode.id
-      : file.revision.defaultToNodeId;
-
-    setFileSelection(file, { from: "base", to: defaultToNodeId });
-
-    window.glimpse.send({
-      type: "checkpoint-clear",
-      fileKey: file.fileKey,
-    });
-
-    renderAll({ preserveScroll: true });
+  if (e.key === "r" || e.key === "R") {
+    e.preventDefault();
+    performReviewToggle(file);
     return;
   }
 
-  const selection = fileSelection(file);
-  const toNode = nodeById(file, selection.to);
-  if (!toNode || toNode.kind !== "commit") return;
+  if (e.key === "b" || e.key === "B") {
+    e.preventDefault();
+    applyFloorSelection(file, file.revision.defaultFromNodeId || "base");
+    return;
+  }
 
-  file.revision.checkpointNodeId = toNode.id;
-  file.revision.defaultFromNodeId = toNode.id;
+  if (e.key === "h" || e.key === "H") {
+    e.preventDefault();
+    applyCeilingSelection(file, file.revision.headNodeId);
+    return;
+  }
 
-  window.glimpse.send({
-    type: "checkpoint-save",
-    fileKey: file.fileKey,
-    commitSha: toNode.sha,
-  });
+  if (e.key === "[" && !e.shiftKey) {
+    if (ceilingIndex <= 0) return;
+    e.preventDefault();
+    applyCeilingSelection(file, ceilings[ceilingIndex - 1].id);
+    return;
+  }
 
-  renderAll({ preserveScroll: true });
+  if (e.key === "]" && !e.shiftKey) {
+    if (ceilingIndex < 0 || ceilingIndex >= ceilings.length - 1) return;
+    e.preventDefault();
+    applyCeilingSelection(file, ceilings[ceilingIndex + 1].id);
+    return;
+  }
+
+  if (e.key === "{" || (e.key === "[" && e.shiftKey)) {
+    if (floorIndex <= 0) return;
+    e.preventDefault();
+    applyFloorSelection(file, floors[floorIndex - 1].id);
+    return;
+  }
+
+  if (e.key === "}" || (e.key === "]" && e.shiftKey)) {
+    if (floorIndex < 0 || floorIndex >= floors.length - 1) return;
+    e.preventDefault();
+    applyFloorSelection(file, floors[floorIndex + 1].id);
+  }
+});
+
+toggleReviewedButton.addEventListener("click", () => {
+  const file = activeFile();
+  if (!file) return;
+  performReviewToggle(file);
 });
 
 renderAll();

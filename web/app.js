@@ -139,7 +139,6 @@ const cancelButton = document.getElementById("cancel-button");
 const overallCommentButton = document.getElementById("overall-comment-button");
 const fileCommentButton = document.getElementById("file-comment-button");
 const toggleReviewedButton = document.getElementById("toggle-reviewed-button");
-const clearReviewedButton = document.getElementById("clear-reviewed-button");
 const toggleUnchangedButton = document.getElementById("toggle-unchanged-button");
 const toggleWrapButton = document.getElementById("toggle-wrap-button");
 const modeCommittedButton = document.getElementById("mode-committed-button");
@@ -278,10 +277,75 @@ function isFileReviewed(file) {
   return file.revision.checkpointNodeId != null;
 }
 
-function canMarkReviewed(file) {
+function reviewToggleState(file) {
   const selection = fileSelection(file);
-  const node = nodeById(file, selection.to);
-  return node?.kind === "commit";
+  const toNode = nodeById(file, selection.to);
+  const checkpointNode = nodeById(file, file.revision.checkpointNodeId);
+
+  const toIndex = nodeIndex(file, selection.to);
+  const checkpointIndex = file.revision.checkpointNodeId ? nodeIndex(file, file.revision.checkpointNodeId) : -1;
+
+  const hasCheckpoint = checkpointNode != null;
+  const canMark = toNode?.kind === "commit";
+  const reviewedThroughSelectedCommit = canMark && hasCheckpoint && checkpointIndex >= toIndex;
+
+  if (reviewedThroughSelectedCommit) {
+    return {
+      action: "clear",
+      disabled: false,
+      icon: "reviewed",
+      label: "Reviewed through selected commit",
+      title: "Reviewed through selected To commit. Click to clear reviewed state.",
+      className: "cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#2ea043]/40 bg-[#238636]/15 text-[#3fb950] hover:bg-[#238636]/25",
+    };
+  }
+
+  if (hasCheckpoint && !canMark) {
+    return {
+      action: "clear",
+      disabled: false,
+      icon: "reviewed",
+      label: "Checkpoint saved (click to clear)",
+      title: "A checkpoint exists, but To is not a commit. Click to clear reviewed state.",
+      className: "cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#2ea043]/40 bg-[#238636]/15 text-[#3fb950] hover:bg-[#238636]/25",
+    };
+  }
+
+  if (canMark) {
+    return {
+      action: "mark",
+      disabled: false,
+      icon: "pending",
+      label: "Not reviewed through selected commit",
+      title: "Click to mark reviewed through selected To commit.",
+      className: "cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#f85149]/40 bg-[#f85149]/15 text-[#ff7b72] hover:bg-[#f85149]/25",
+    };
+  }
+
+  return {
+    action: null,
+    disabled: true,
+    icon: "pending",
+    label: "Select a commit in To to mark reviewed",
+    title: "Mark reviewed is available only when To is a commit.",
+    className: "cursor-not-allowed inline-flex h-8 w-8 items-center justify-center rounded-md border border-review-border bg-review-panel text-review-muted opacity-60",
+  };
+}
+
+function reviewToggleIcon(icon) {
+  if (icon === "reviewed") {
+    return `<svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.27 2.943 9.543 7-1.274 4.057-5.065 7-9.543 7-4.477 0-8.268-2.943-9.542-7z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>`;
+  }
+
+  return `<svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M3 3l18 18" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M10.584 10.587A2 2 0 0012 14a2 2 0 001.414-.586" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M9.88 5.09A9.95 9.95 0 0112 5c4.478 0 8.27 2.943 9.543 7a9.97 9.97 0 01-4.132 5.112" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M6.228 6.232A9.965 9.965 0 002.458 12c1.274 4.057 5.065 7 9.543 7 1.596 0 3.106-.37 4.45-1.03" />
+  </svg>`;
 }
 
 function saveCurrentScrollPosition() {
@@ -635,28 +699,21 @@ function updateRangeSummary() {
 
 function updateToggleButtons() {
   const file = activeFile();
-  const canMark = file ? canMarkReviewed(file) : false;
 
-  if (canMark) {
-    const selection = fileSelection(file);
-    const toNode = nodeById(file, selection.to);
-    const already = file.revision.checkpointNodeId === selection.to;
-    toggleReviewedButton.textContent = already ? "Reviewed through selected commit" : "Mark reviewed through here";
-    toggleReviewedButton.disabled = false;
-    toggleReviewedButton.className = already
-      ? "cursor-pointer rounded-md border border-[#2ea043]/40 bg-[#238636]/15 px-3 py-1 text-xs font-medium text-[#3fb950] hover:bg-[#238636]/25"
-      : "cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]";
+  if (file) {
+    const toggle = reviewToggleState(file);
+    toggleReviewedButton.innerHTML = reviewToggleIcon(toggle.icon);
+    toggleReviewedButton.title = toggle.title;
+    toggleReviewedButton.ariaLabel = toggle.label;
+    toggleReviewedButton.disabled = toggle.disabled;
+    toggleReviewedButton.className = toggle.className;
   } else {
-    toggleReviewedButton.textContent = "Mark reviewed through here";
+    toggleReviewedButton.innerHTML = reviewToggleIcon("pending");
+    toggleReviewedButton.title = "Select a file";
+    toggleReviewedButton.ariaLabel = "Select a file";
     toggleReviewedButton.disabled = true;
-    toggleReviewedButton.className = "cursor-not-allowed rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-muted opacity-60";
+    toggleReviewedButton.className = "cursor-not-allowed inline-flex h-8 w-8 items-center justify-center rounded-md border border-review-border bg-review-panel text-review-muted opacity-60";
   }
-
-  const canClear = file && file.revision.checkpointNodeId != null;
-  clearReviewedButton.disabled = !canClear;
-  clearReviewedButton.className = canClear
-    ? "cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]"
-    : "cursor-not-allowed rounded-md border border-review-border bg-review-panel px-3 py-1 text-xs font-medium text-review-muted opacity-60";
 
   toggleUnchangedButton.textContent = state.hideUnchanged ? "Show full file" : "Show changed areas only";
   toggleWrapButton.textContent = `Wrap lines: ${state.wrapLines ? "on" : "off"}`;
@@ -1144,6 +1201,33 @@ toggleWrapButton.addEventListener("click", () => {
 toggleReviewedButton.addEventListener("click", () => {
   const file = activeFile();
   if (!file) return;
+
+  const toggle = reviewToggleState(file);
+  if (toggle.disabled || toggle.action == null) return;
+
+  if (toggle.action === "clear") {
+    const checkpointNodeId = file.revision.checkpointNodeId;
+    if (!checkpointNodeId) return;
+
+    file.revision.checkpointNodeId = null;
+    file.revision.defaultFromNodeId = "base";
+
+    const workingNode = workingTreeNode(file);
+    const defaultToNodeId = state.mode === "working" && workingNode != null
+      ? workingNode.id
+      : file.revision.defaultToNodeId;
+
+    setFileSelection(file, { from: "base", to: defaultToNodeId });
+
+    window.glimpse.send({
+      type: "checkpoint-clear",
+      fileKey: file.fileKey,
+    });
+
+    renderAll({ preserveScroll: true });
+    return;
+  }
+
   const selection = fileSelection(file);
   const toNode = nodeById(file, selection.to);
   if (!toNode || toNode.kind !== "commit") return;
@@ -1155,30 +1239,6 @@ toggleReviewedButton.addEventListener("click", () => {
     type: "checkpoint-save",
     fileKey: file.fileKey,
     commitSha: toNode.sha,
-  });
-
-  renderAll({ preserveScroll: true });
-});
-
-clearReviewedButton.addEventListener("click", () => {
-  const file = activeFile();
-  if (!file) return;
-  const checkpointNodeId = file.revision.checkpointNodeId;
-  if (!checkpointNodeId) return;
-
-  file.revision.checkpointNodeId = null;
-  file.revision.defaultFromNodeId = "base";
-
-  const workingNode = workingTreeNode(file);
-  const defaultToNodeId = state.mode === "working" && workingNode != null
-    ? workingNode.id
-    : file.revision.defaultToNodeId;
-
-  setFileSelection(file, { from: "base", to: defaultToNodeId });
-
-  window.glimpse.send({
-    type: "checkpoint-clear",
-    fileKey: file.fileKey,
   });
 
   renderAll({ preserveScroll: true });

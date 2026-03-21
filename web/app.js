@@ -136,6 +136,7 @@ const fileCommentsContainer = document.getElementById("file-comments-container")
 const editorContainerEl = document.getElementById("editor-container");
 const submitButton = document.getElementById("submit-button");
 const cancelButton = document.getElementById("cancel-button");
+const shortcutsButton = document.getElementById("shortcuts-button");
 const overallCommentButton = document.getElementById("overall-comment-button");
 const fileCommentButton = document.getElementById("file-comment-button");
 const toggleReviewedButton = document.getElementById("toggle-reviewed-button");
@@ -811,6 +812,53 @@ function showTextModal(options) {
   textarea.focus();
 }
 
+function showShortcutsModal() {
+  if (document.getElementById("review-shortcuts-modal")) return;
+
+  const backdrop = document.createElement("div");
+  backdrop.id = "review-shortcuts-modal";
+  backdrop.className = "review-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="review-modal-card">
+      <div class="mb-3 flex items-center justify-between gap-3">
+        <div class="text-base font-semibold text-white">Keyboard shortcuts</div>
+        <button id="review-shortcuts-close" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-2 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Close</button>
+      </div>
+      <div class="space-y-2 text-sm text-review-text">
+        <div class="grid grid-cols-[140px_1fr] gap-x-3 gap-y-1">
+          <div class="font-mono text-xs text-review-muted">?</div><div>Open this shortcuts dialog</div>
+          <div class="font-mono text-xs text-review-muted">R</div><div>Toggle reviewed through selected <strong>To</strong> commit</div>
+          <div class="font-mono text-xs text-review-muted">B</div><div>Set <strong>From</strong> to checkpoint (or Base)</div>
+          <div class="font-mono text-xs text-review-muted">H</div><div>Set <strong>To</strong> to Head commit</div>
+          <div class="font-mono text-xs text-review-muted">[ / ]</div><div>Move <strong>To</strong> older / newer</div>
+          <div class="font-mono text-xs text-review-muted">Shift+[ / Shift+]</div><div>Move <strong>From</strong> older / newer</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const close = () => {
+    document.removeEventListener("keydown", onKeyDown, true);
+    backdrop.remove();
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    }
+  };
+
+  backdrop.addEventListener("click", (event) => {
+    if (event.target === backdrop) close();
+  });
+
+  backdrop.querySelector("#review-shortcuts-close").addEventListener("click", close);
+
+  document.body.appendChild(backdrop);
+  document.addEventListener("keydown", onKeyDown, true);
+}
+
 function showOverallCommentModal() {
   showTextModal({
     title: "Overall review note",
@@ -1221,6 +1269,10 @@ cancelButton.addEventListener("click", () => {
   window.glimpse.close();
 });
 
+shortcutsButton?.addEventListener("click", () => {
+  showShortcutsModal();
+});
+
 overallCommentButton.addEventListener("click", () => {
   showOverallCommentModal();
 });
@@ -1268,12 +1320,20 @@ function isTypingTarget(target) {
 }
 
 window.addEventListener("keydown", (e) => {
-  const file = activeFile();
-  if (!file) return;
   if (isTypingTarget(e.target)) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.repeat) return;
+
+  if (e.key === "?" || (e.key === "/" && e.shiftKey)) {
+    e.preventDefault();
+    showShortcutsModal();
+    return;
+  }
+
   if (document.querySelector(".review-modal-backdrop")) return;
+
+  const file = activeFile();
+  if (!file) return;
 
   const selection = fileSelection(file);
   const floors = floorNodes(file);

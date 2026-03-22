@@ -1,5 +1,15 @@
 # pi-diff-review
 
+> [!IMPORTANT]
+> This repository is a customized fork of [badlogic/pi-diff-review](https://github.com/badlogic/pi-diff-review).
+>
+> **What this fork adds**
+> - **Per-file review checkpoints** so files can stay marked as reviewed across later review sessions
+> - **Checkpoint-based diff ranges** that can start from the last reviewed commit instead of always from base
+> - **Keyboard shortcuts for review flow**, including toggling reviewed state and jumping between files and hunks
+>
+> The rest of this README largely follows upstream so future syncs stay simple.
+
 This is pure slop, see: https://pi.dev/session/#d4ce533cedbd60040f2622dc3db950e2
 
 It is my hope, that someone takes this idea and makes it gud.

@@ -96,12 +96,25 @@ export interface ReviewRangeContentRequestPayload {
   requestId: number;
 }
 
+export interface ReviewClipboardReadRequestPayload {
+  type: "clipboard-read-request";
+  requestId: number;
+}
+
+export interface ReviewClipboardWriteRequestPayload {
+  type: "clipboard-write-request";
+  requestId: number;
+  text: string;
+}
+
 export type ReviewWindowMessage =
   | ReviewSubmitPayload
   | ReviewCancelPayload
   | ReviewCheckpointSavePayload
   | ReviewCheckpointClearPayload
-  | ReviewRangeContentRequestPayload;
+  | ReviewRangeContentRequestPayload
+  | ReviewClipboardReadRequestPayload
+  | ReviewClipboardWriteRequestPayload;
 
 export interface DiffReviewWindowData {
   repoRoot: string;

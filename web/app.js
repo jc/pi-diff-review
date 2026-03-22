@@ -88,6 +88,9 @@ function firstFileId(mode) {
   return modeData(mode).files[0]?.id ?? null;
 }
 
+const clipboardBridgePending = new Map();
+let clipboardBridgeRequestId = 1;
+
 const state = {
   mode: reviewData.defaultMode ?? "working",
   activeFileIdByMode: {
@@ -110,6 +113,9 @@ const state = {
   hunkCursorKey: null,
   hunkCursorIndex: -1,
   lastRangeSwitchMs: null,
+  clipboardDebugEnabled: true,
+  clipboardDebugLines: [],
+  monacoActiveSide: "modified",
 };
 
 for (const mode of MODES) {
@@ -147,6 +153,7 @@ const toggleWrapButton = document.getElementById("toggle-wrap-button");
 const modeCommittedButton = document.getElementById("mode-committed-button");
 const modeWorkingButton = document.getElementById("mode-working-button");
 const reviewNoticeEl = document.getElementById("review-notice");
+const clipboardDebugEl = document.getElementById("clipboard-debug");
 const revisionStripEl = document.getElementById("revision-strip");
 
 repoRootEl.textContent = reviewData.repoRoot || "";
@@ -448,6 +455,27 @@ function escapeHtml(value) {
 
 function statusLabel(status) {
   return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function describeTarget(target) {
+  if (!(target instanceof HTMLElement)) return "<none>";
+  const tag = target.tagName.toLowerCase();
+  const id = target.id ? `#${target.id}` : "";
+  const cls = target.className && typeof target.className === "string"
+    ? `.${target.className.split(/\s+/).filter(Boolean).slice(0, 2).join(".")}`
+    : "";
+  return `${tag}${id}${cls}`;
+}
+
+function pushClipboardDebug(line) {
+  if (!state.clipboardDebugEnabled || !clipboardDebugEl) return;
+  const timestamp = new Date().toLocaleTimeString();
+  state.clipboardDebugLines.push(`${timestamp} ${line}`);
+  if (state.clipboardDebugLines.length > 8) {
+    state.clipboardDebugLines.shift();
+  }
+  clipboardDebugEl.className = "rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-200 whitespace-pre-wrap";
+  clipboardDebugEl.textContent = `Clipboard debug\n${state.clipboardDebugLines.join("\n")}`;
 }
 
 function statusBadgeClass(status) {
@@ -873,13 +901,16 @@ function showShortcutsModal() {
         <button id="review-shortcuts-close" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-2 py-1 text-xs font-medium text-review-text hover:bg-[#21262d]">Close</button>
       </div>
       <div class="space-y-2 text-sm text-review-text">
-        <div class="grid grid-cols-[140px_1fr] gap-x-3 gap-y-1">
+        <div class="grid grid-cols-[160px_1fr] gap-x-3 gap-y-1">
           <div class="font-mono text-xs text-review-muted">?</div><div>Open this shortcuts dialog</div>
           <div class="font-mono text-xs text-review-muted">R</div><div>Toggle reviewed through selected <strong>To</strong> commit</div>
           <div class="font-mono text-xs text-review-muted">B</div><div>Set <strong>From</strong> to checkpoint (or Base)</div>
           <div class="font-mono text-xs text-review-muted">H</div><div>Set <strong>To</strong> to Head commit</div>
           <div class="font-mono text-xs text-review-muted">[ / ]</div><div>Move <strong>To</strong> older / newer</div>
           <div class="font-mono text-xs text-review-muted">Shift+[ / Shift+]</div><div>Move <strong>From</strong> older / newer</div>
+          <div class="font-mono text-xs text-review-muted">Space</div><div>Jump to next diff hunk (no wrap)</div>
+          <div class="font-mono text-xs text-review-muted">Cmd/Ctrl+C</div><div>Copy selected text (comments and diff panes)</div>
+          <div class="font-mono text-xs text-review-muted">Cmd/Ctrl+V</div><div>Paste into comment textareas</div>
         </div>
       </div>
     </div>
@@ -1281,6 +1312,7 @@ function setupMonaco() {
       wordWrap: "on",
     });
 
+    installMonacoClipboardCommands();
     createGlyphHoverActions(diffEditor.getOriginalEditor(), "original");
     createGlyphHoverActions(diffEditor.getModifiedEditor(), "modified");
 
@@ -1366,6 +1398,265 @@ function isTypingTarget(target) {
   const tag = target.tagName;
   return target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
+
+function isClipboardShortcutEvent(event) {
+  if (!(event.metaKey || event.ctrlKey)) return false;
+  const key = event.key.toLowerCase();
+  return key === "c" || key === "v" || key === "x";
+}
+
+function isMonacoInputTarget(target) {
+  return target instanceof HTMLElement
+    && target.classList.contains("inputarea")
+    && target.classList.contains("monaco-mouse-cursor-text");
+}
+
+function getEditorSelectionText(editor) {
+  const selection = editor.getSelection?.();
+  const model = editor.getModel?.();
+  if (!selection || !model || selection.isEmpty()) return "";
+  return model.getValueInRange(selection) || "";
+}
+
+function getMonacoEditorBySide(side) {
+  if (!diffEditor) return null;
+  return side === "original"
+    ? diffEditor.getOriginalEditor()
+    : diffEditor.getModifiedEditor();
+}
+
+function getPreferredMonacoSelectionText() {
+  if (!diffEditor) return "";
+
+  const preferredSides = state.monacoActiveSide === "original"
+    ? ["original", "modified"]
+    : ["modified", "original"];
+
+  for (const side of preferredSides) {
+    const editor = getMonacoEditorBySide(side);
+    if (!editor) continue;
+    const value = getEditorSelectionText(editor);
+    if (value) return value;
+  }
+
+  const domSelection = window.getSelection?.();
+  return domSelection?.toString() ?? "";
+}
+
+function installMonacoClipboardCommands() {
+  if (!monacoApi || !diffEditor) return;
+
+  const originalEditor = diffEditor.getOriginalEditor();
+  const modifiedEditor = diffEditor.getModifiedEditor();
+
+  originalEditor.onDidFocusEditorText(() => {
+    state.monacoActiveSide = "original";
+  });
+  modifiedEditor.onDidFocusEditorText(() => {
+    state.monacoActiveSide = "modified";
+  });
+
+  const copyKeybinding = monacoApi.KeyMod.CtrlCmd | monacoApi.KeyCode.KeyC;
+
+  const handleCopyCommand = () => {
+    const text = getPreferredMonacoSelectionText();
+    if (!text) {
+      pushClipboardDebug(`monaco cmd-c skipped (empty selection; side=${state.monacoActiveSide})`);
+      return;
+    }
+
+    void writeClipboardText(text)
+      .then(() => pushClipboardDebug(`monaco cmd-c ok chars=${text.length} side=${state.monacoActiveSide}`))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        pushClipboardDebug(`monaco cmd-c failed: ${message}`);
+      });
+  };
+
+  originalEditor.addCommand(copyKeybinding, handleCopyCommand);
+  modifiedEditor.addCommand(copyKeybinding, handleCopyCommand);
+}
+
+function getSelectionTextFromInput(target) {
+  if (!(target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement)) return "";
+  const start = target.selectionStart ?? 0;
+  const end = target.selectionEnd ?? start;
+  return target.value.slice(start, end);
+}
+
+function replaceInputSelection(target, text) {
+  const start = target.selectionStart ?? target.value.length;
+  const end = target.selectionEnd ?? start;
+  const before = target.value.slice(0, start);
+  const after = target.value.slice(end);
+  target.value = `${before}${text}${after}`;
+  const cursor = start + text.length;
+  target.setSelectionRange(cursor, cursor);
+  target.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function deleteInputSelection(target) {
+  const start = target.selectionStart ?? 0;
+  const end = target.selectionEnd ?? start;
+  const before = target.value.slice(0, start);
+  const after = target.value.slice(end);
+  target.value = `${before}${after}`;
+  target.setSelectionRange(start, start);
+  target.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function requestClipboardBridge(message) {
+  return new Promise((resolve, reject) => {
+    const requestId = clipboardBridgeRequestId++;
+
+    const timeout = setTimeout(() => {
+      clipboardBridgePending.delete(requestId);
+      reject(new Error("clipboard bridge timed out"));
+    }, 3000);
+
+    clipboardBridgePending.set(requestId, {
+      resolve: (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    });
+
+    window.glimpse.send({
+      ...message,
+      requestId,
+    });
+  });
+}
+
+async function readClipboardText() {
+  if (navigator.clipboard?.readText) {
+    return navigator.clipboard.readText();
+  }
+
+  const result = await requestClipboardBridge({ type: "clipboard-read-request" });
+  return result?.text ?? "";
+}
+
+async function writeClipboardText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const result = await requestClipboardBridge({ type: "clipboard-write-request", text });
+  if (!result?.ok) {
+    throw new Error(result?.error || "clipboard write failed");
+  }
+}
+
+window.__piDiffReviewReceiveClipboardResponse = function receiveClipboardResponse(payload) {
+  if (!payload || typeof payload !== "object") return;
+
+  const pending = clipboardBridgePending.get(payload.requestId);
+  if (!pending) return;
+
+  clipboardBridgePending.delete(payload.requestId);
+
+  if (payload.ok) {
+    pending.resolve(payload);
+  } else {
+    pending.reject(new Error(payload.error || "clipboard bridge error"));
+  }
+};
+
+async function handleManualClipboardShortcut(event) {
+  if (!isClipboardShortcutEvent(event)) return;
+  if (!isTypingTarget(event.target)) return;
+
+  const target = event.target;
+  if (target instanceof HTMLElement && target.classList.contains("inputarea") && target.classList.contains("monaco-mouse-cursor-text")) {
+    return;
+  }
+
+  const key = event.key.toLowerCase();
+  pushClipboardDebug(
+    `keydown ${event.metaKey ? "meta" : "ctrl"}+${key} target=${describeTarget(event.target)} defaultPrevented=${event.defaultPrevented}`,
+  );
+
+  if (isMonacoInputTarget(target)) {
+    if (key !== "c" && key !== "x") {
+      pushClipboardDebug(`manual ${key} skipped (monaco read-only)`);
+      return;
+    }
+
+    event.preventDefault();
+
+    try {
+      const selected = getPreferredMonacoSelectionText();
+      if (!selected) {
+        pushClipboardDebug("manual monaco copy skipped (empty selection)");
+        return;
+      }
+
+      await writeClipboardText(selected);
+      pushClipboardDebug(`manual monaco copy ok chars=${selected.length}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      pushClipboardDebug(`manual monaco copy failed: ${message}`);
+    }
+    return;
+  }
+
+  if (!(target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement)) {
+    pushClipboardDebug(`manual ${key} skipped (non-input target)`);
+    return;
+  }
+
+  event.preventDefault();
+
+  try {
+    if (key === "v") {
+      const text = await readClipboardText();
+      replaceInputSelection(target, text);
+      pushClipboardDebug(`manual paste ok chars=${text.length}`);
+      return;
+    }
+
+    const selectionText = getSelectionTextFromInput(target);
+    if (!selectionText) {
+      pushClipboardDebug(`manual ${key} skipped (empty selection)`);
+      return;
+    }
+
+    await writeClipboardText(selectionText);
+    pushClipboardDebug(`manual ${key === "x" ? "cut" : "copy"} ok chars=${selectionText.length}`);
+
+    if (key === "x") {
+      deleteInputSelection(target);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    pushClipboardDebug(`manual ${key} failed: ${message}`);
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+  void handleManualClipboardShortcut(e);
+}, true);
+
+document.addEventListener("paste", (e) => {
+  const text = e.clipboardData?.getData("text") ?? "";
+  pushClipboardDebug(
+    `paste target=${describeTarget(e.target)} chars=${text.length} defaultPrevented=${e.defaultPrevented}`,
+  );
+}, true);
+
+document.addEventListener("copy", (e) => {
+  pushClipboardDebug(`copy target=${describeTarget(e.target)} defaultPrevented=${e.defaultPrevented}`);
+}, true);
+
+document.addEventListener("cut", (e) => {
+  pushClipboardDebug(`cut target=${describeTarget(e.target)} defaultPrevented=${e.defaultPrevented}`);
+}, true);
 
 window.addEventListener("keydown", (e) => {
   if (isTypingTarget(e.target)) return;

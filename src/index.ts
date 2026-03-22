@@ -4,12 +4,15 @@ import { open, type GlimpseWindow } from "glimpseui";
 import { clearRepoCheckpoint, loadRepoCheckpoints, saveRepoCheckpoint } from "./checkpoints.js";
 import { getDiffReviewFiles } from "./git.js";
 import { composeReviewPrompt } from "./prompt.js";
+import { spawn } from "node:child_process";
 import type {
   DiffReviewFile,
   DiffReviewWindowData,
   ReviewCancelPayload,
   ReviewCheckpointClearPayload,
   ReviewCheckpointSavePayload,
+  ReviewClipboardReadRequestPayload,
+  ReviewClipboardWriteRequestPayload,
   ReviewRangeContentRequestPayload,
   ReviewSubmitPayload,
   ReviewWindowMessage,
@@ -34,6 +37,14 @@ function isCheckpointClearPayload(value: ReviewWindowMessage): value is ReviewCh
 
 function isRangeContentRequestPayload(value: ReviewWindowMessage): value is ReviewRangeContentRequestPayload {
   return value.type === "range-content-request";
+}
+
+function isClipboardReadRequestPayload(value: ReviewWindowMessage): value is ReviewClipboardReadRequestPayload {
+  return value.type === "clipboard-read-request";
+}
+
+function isClipboardWriteRequestPayload(value: ReviewWindowMessage): value is ReviewClipboardWriteRequestPayload {
+  return value.type === "clipboard-write-request";
 }
 
 function collectAllFiles(data: DiffReviewWindowData): DiffReviewFile[] {
@@ -125,6 +136,93 @@ function sendRangeContent(
     .replace(/`/g, "\\`")
     .replace(/\$\{/g, "\\${");
   window.send(`window.__piDiffReviewReceiveRangeContent?.(JSON.parse(\`${encoded}\`));`);
+}
+
+function sendClipboardResponse(
+  window: GlimpseWindow,
+  payload: { requestId: number; ok: boolean; text?: string; error?: string },
+): void {
+  const encoded = JSON.stringify(payload)
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
+  window.send(`window.__piDiffReviewReceiveClipboardResponse?.(JSON.parse(\`${encoded}\`));`);
+}
+
+function runCommand(command: string, args: string[], input?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (error) => {
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve(stdout);
+        return;
+      }
+      reject(new Error(stderr.trim() || `${command} exited with code ${code ?? -1}`));
+    });
+
+    if (input != null) {
+      child.stdin.write(input);
+    }
+    child.stdin.end();
+  });
+}
+
+async function readSystemClipboard(): Promise<string> {
+  if (process.platform === "darwin") {
+    return runCommand("pbpaste", []);
+  }
+
+  if (process.platform === "win32") {
+    return runCommand("powershell", ["-NoProfile", "-Command", "Get-Clipboard"]);
+  }
+
+  try {
+    return await runCommand("wl-paste", ["-n"]);
+  } catch {}
+
+  try {
+    return await runCommand("xclip", ["-selection", "clipboard", "-o"]);
+  } catch {}
+
+  return runCommand("xsel", ["--clipboard", "--output"]);
+}
+
+async function writeSystemClipboard(text: string): Promise<void> {
+  if (process.platform === "darwin") {
+    await runCommand("pbcopy", [], text);
+    return;
+  }
+
+  if (process.platform === "win32") {
+    await runCommand("clip", [], text);
+    return;
+  }
+
+  try {
+    await runCommand("wl-copy", [], text);
+    return;
+  } catch {}
+
+  try {
+    await runCommand("xclip", ["-selection", "clipboard"], text);
+    return;
+  } catch {}
+
+  await runCommand("xsel", ["--clipboard", "--input"], text);
 }
 
 type WaitingEditorResult = "escape" | "window-settled";
@@ -302,6 +400,45 @@ export default function (pi: ExtensionAPI) {
               oldContent: file.revision.nodeContents[message.fromNodeId] ?? "",
               newContent: file.revision.nodeContents[message.toNodeId] ?? "",
             });
+            return;
+          }
+
+          if (isClipboardReadRequestPayload(message)) {
+            readSystemClipboard()
+              .then((text) => {
+                sendClipboardResponse(window, {
+                  requestId: message.requestId,
+                  ok: true,
+                  text,
+                });
+              })
+              .catch((error) => {
+                const text = error instanceof Error ? error.message : String(error);
+                sendClipboardResponse(window, {
+                  requestId: message.requestId,
+                  ok: false,
+                  error: text,
+                });
+              });
+            return;
+          }
+
+          if (isClipboardWriteRequestPayload(message)) {
+            writeSystemClipboard(message.text)
+              .then(() => {
+                sendClipboardResponse(window, {
+                  requestId: message.requestId,
+                  ok: true,
+                });
+              })
+              .catch((error) => {
+                const text = error instanceof Error ? error.message : String(error);
+                sendClipboardResponse(window, {
+                  requestId: message.requestId,
+                  ok: false,
+                  error: text,
+                });
+              });
             return;
           }
 

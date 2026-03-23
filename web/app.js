@@ -384,10 +384,10 @@ function reviewCeilingNodeId(file, mode = state.mode) {
 }
 
 function fileReviewStatus(file, mode = state.mode) {
-  const reviewedNodeId = file.revision.reviewedNodeId;
-  if (!reviewedNodeId) return "unreviewed";
+  const checkpointNodeId = file.revision.checkpointNodeId ?? file.revision.reviewedNodeId;
+  if (!checkpointNodeId) return "unreviewed";
 
-  const checkpointIndex = nodeIndex(file, reviewedNodeId);
+  const checkpointIndex = nodeIndex(file, checkpointNodeId);
   const ceilingIndex = nodeIndex(file, reviewCeilingNodeId(file, mode));
 
   if (checkpointIndex === -1 || ceilingIndex === -1) return "unreviewed";
@@ -395,14 +395,14 @@ function fileReviewStatus(file, mode = state.mode) {
 }
 
 function isFileReviewed(file) {
-  return file.revision.reviewedNodeId != null;
+  return file.revision.checkpointNodeId != null || file.revision.reviewedNodeId != null;
 }
 
 function fileReviewDotTitle(file, mode = state.mode) {
   const status = fileReviewStatus(file, mode);
   if (status === "unreviewed") return "Unreviewed";
 
-  const checkpointNode = nodeById(file, file.revision.reviewedNodeId);
+  const checkpointNode = nodeById(file, file.revision.checkpointNodeId ?? file.revision.reviewedNodeId);
   const ceilingNode = nodeById(file, reviewCeilingNodeId(file, mode));
 
   if (status === "complete") {

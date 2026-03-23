@@ -303,8 +303,41 @@ function humanizeNode(node) {
   return node.shortSha;
 }
 
+function reviewCeilingNodeId(file, mode = state.mode) {
+  if (mode === "working") {
+    return workingTreeNode(file)?.id ?? file.revision.headNodeId;
+  }
+
+  return file.revision.headNodeId;
+}
+
+function fileReviewStatus(file, mode = state.mode) {
+  const checkpointNodeId = file.revision.checkpointNodeId;
+  if (!checkpointNodeId) return "unreviewed";
+
+  const checkpointIndex = nodeIndex(file, checkpointNodeId);
+  const ceilingIndex = nodeIndex(file, reviewCeilingNodeId(file, mode));
+
+  if (checkpointIndex === -1 || ceilingIndex === -1) return "unreviewed";
+  return checkpointIndex >= ceilingIndex ? "complete" : "partial";
+}
+
 function isFileReviewed(file) {
   return file.revision.checkpointNodeId != null;
+}
+
+function fileReviewDotTitle(file, mode = state.mode) {
+  const status = fileReviewStatus(file, mode);
+  if (status === "unreviewed") return "Unreviewed";
+
+  const checkpointNode = nodeById(file, file.revision.checkpointNodeId);
+  const ceilingNode = nodeById(file, reviewCeilingNodeId(file, mode));
+
+  if (status === "complete") {
+    return `Reviewed through ${humanizeNode(ceilingNode)}`;
+  }
+
+  return `Partially reviewed through ${humanizeNode(checkpointNode)}; pending through ${humanizeNode(ceilingNode)}`;
 }
 
 function reviewToggleState(file) {
@@ -565,6 +598,12 @@ function renderTreeNode(node, depth) {
     const file = child.file;
     const count = state.comments.filter((comment) => comment.fileId === file.id).length;
     const reviewed = isFileReviewed(file);
+    const reviewStatus = fileReviewStatus(file);
+    const reviewDotClass = reviewStatus === "complete"
+      ? "text-[#3fb950]"
+      : reviewStatus === "partial"
+        ? "text-[#d29922]"
+        : "text-transparent";
     const button = document.createElement("button");
     button.type = "button";
     button.className = [
@@ -574,7 +613,7 @@ function renderTreeNode(node, depth) {
     button.style.paddingLeft = `${(depth * indentPx) + 26}px`;
     button.innerHTML = `
       <span class="flex min-w-0 items-center gap-1.5 truncate ${file.id === activeFileId() ? "font-medium" : ""}">
-        <span class="shrink-0 text-[10px] ${reviewed ? "text-[#3fb950]" : "text-transparent"}">●</span>
+        <span class="shrink-0 text-[10px] ${reviewDotClass}" title="${escapeHtml(fileReviewDotTitle(file))}">●</span>
         <span class="truncate">${escapeHtml(child.name)}</span>
       </span>
       <span class="flex shrink-0 items-center gap-1.5">

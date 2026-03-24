@@ -1,19 +1,20 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import { open, type GlimpseWindow } from "glimpseui";
-import { clearRepoCheckpoint, loadRepoCheckpoints, saveRepoCheckpoint } from "./checkpoints.js";
+import { clearRepoReviewState, loadRepoReviewStates, saveRepoReviewState } from "./checkpoints.js";
 import { getDiffReviewFiles } from "./git.js";
 import { composeReviewPrompt } from "./prompt.js";
+import { createCommitReviewState, createWorkingTreeReviewState, resolveReviewState } from "./review-state.js";
 import { spawn } from "node:child_process";
 import type {
   DiffReviewFile,
   DiffReviewWindowData,
   ReviewCancelPayload,
-  ReviewCheckpointClearPayload,
-  ReviewCheckpointSavePayload,
   ReviewClipboardReadRequestPayload,
   ReviewClipboardWriteRequestPayload,
   ReviewRangeContentRequestPayload,
+  ReviewStateClearPayload,
+  ReviewStateSavePayload,
   ReviewSubmitPayload,
   ReviewWindowMessage,
 } from "./types.js";
@@ -27,12 +28,12 @@ function isCancelPayload(value: ReviewWindowMessage): value is ReviewCancelPaylo
   return value.type === "cancel";
 }
 
-function isCheckpointSavePayload(value: ReviewWindowMessage): value is ReviewCheckpointSavePayload {
-  return value.type === "checkpoint-save";
+function isReviewStateSavePayload(value: ReviewWindowMessage): value is ReviewStateSavePayload {
+  return value.type === "review-state-save";
 }
 
-function isCheckpointClearPayload(value: ReviewWindowMessage): value is ReviewCheckpointClearPayload {
-  return value.type === "checkpoint-clear";
+function isReviewStateClearPayload(value: ReviewWindowMessage): value is ReviewStateClearPayload {
+  return value.type === "review-state-clear";
 }
 
 function isRangeContentRequestPayload(value: ReviewWindowMessage): value is ReviewRangeContentRequestPayload {
@@ -62,21 +63,15 @@ function collectAllFiles(data: DiffReviewWindowData): DiffReviewFile[] {
   return files;
 }
 
-function applyCheckpointDefaults(data: DiffReviewWindowData, checkpoints: Map<string, string>): void {
+function applyReviewStateDefaults(data: DiffReviewWindowData, reviewStates: Map<string, import("./review-state.js").ReviewStateRecord>): void {
   for (const mode of [data.modes.committed, data.modes.working]) {
     for (const file of mode.files) {
-      const checkpointSha = checkpoints.get(file.fileKey) ?? null;
-      const checkpointNode = file.revision.nodes.find((node) => node.kind === "commit" && node.sha === checkpointSha);
-      const workingTreeNode = file.revision.nodes.find((node) => node.kind === "working-tree");
+      const resolved = resolveReviewState(file, mode.mode, reviewStates);
 
-      file.revision.checkpointNodeId = checkpointNode?.id ?? null;
-      file.revision.defaultFromNodeId = file.revision.checkpointNodeId ?? "base";
-
-      if (mode.mode === "working") {
-        file.revision.defaultToNodeId = workingTreeNode?.id ?? file.revision.headNodeId;
-      } else {
-        file.revision.defaultToNodeId = file.revision.headNodeId;
-      }
+      file.revision.checkpointNodeId = resolved.checkpointNodeId;
+      file.revision.reviewedNodeId = resolved.reviewedNodeId;
+      file.revision.defaultFromNodeId = resolved.defaultFromNodeId;
+      file.revision.defaultToNodeId = resolved.defaultToNodeId;
 
       file.oldContent = file.revision.nodeContents[file.revision.defaultFromNodeId] ?? "";
       file.newContent = file.revision.nodeContents[file.revision.defaultToNodeId] ?? "";
@@ -313,8 +308,8 @@ export default function (pi: ExtensionAPI) {
     }
 
     const fullReviewData = await getDiffReviewFiles(pi, ctx.cwd);
-    const checkpoints = await loadRepoCheckpoints(fullReviewData.repoRoot);
-    applyCheckpointDefaults(fullReviewData, checkpoints);
+    const reviewStates = await loadRepoReviewStates(fullReviewData.repoRoot);
+    applyReviewStateDefaults(fullReviewData, reviewStates);
 
     const allFiles = collectAllFiles(fullReviewData);
     if (allFiles.length === 0) {
@@ -371,18 +366,28 @@ export default function (pi: ExtensionAPI) {
         const onMessage = (data: unknown): void => {
           const message = data as ReviewWindowMessage;
 
-          if (isCheckpointSavePayload(message)) {
-            saveRepoCheckpoint(fullReviewData.repoRoot, message.fileKey, message.commitSha).catch((error) => {
+          if (isReviewStateSavePayload(message)) {
+            const file = findFileByModeAndId(fullReviewData, message.mode, message.fileId);
+            if (!file) return;
+
+            const toNode = file.revision.nodes.find((node) => node.id === message.toNodeId);
+            if (!toNode || toNode.kind === "base") return;
+
+            const reviewState = toNode.kind === "commit"
+              ? createCommitReviewState(toNode.sha)
+              : createWorkingTreeReviewState(file);
+
+            saveRepoReviewState(fullReviewData.repoRoot, file.fileKey, reviewState).catch((error) => {
               const text = error instanceof Error ? error.message : String(error);
-              ctx.ui.notify(`Failed to save checkpoint: ${text}`, "error");
+              ctx.ui.notify(`Failed to save review state: ${text}`, "error");
             });
             return;
           }
 
-          if (isCheckpointClearPayload(message)) {
-            clearRepoCheckpoint(fullReviewData.repoRoot, message.fileKey).catch((error) => {
+          if (isReviewStateClearPayload(message)) {
+            clearRepoReviewState(fullReviewData.repoRoot, message.fileKey).catch((error) => {
               const text = error instanceof Error ? error.message : String(error);
-              ctx.ui.notify(`Failed to clear checkpoint: ${text}`, "error");
+              ctx.ui.notify(`Failed to clear review state: ${text}`, "error");
             });
             return;
           }

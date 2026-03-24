@@ -359,6 +359,7 @@ async function buildFileRevisionData(options: RevisionBuildOptions): Promise<Fil
     nodeContents,
     headNodeId,
     checkpointNodeId: null,
+    reviewedNodeId: null,
     defaultFromNodeId: "base",
     defaultToNodeId: headNodeId,
   };
@@ -487,6 +488,7 @@ export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise
   const trackedWorkingChanges = parseNameStatus(workingTrackedOutput);
   const untrackedChanges = parseUntrackedPaths(workingUntrackedOutput.stdout);
   const workingChanges = mergeChangedPaths(trackedWorkingChanges, untrackedChanges);
+  const workingChangeKeys = new Set(workingChanges.map((change) => changeKey(change)));
 
   const allWorkingChangesByKey = new Map<string, ChangedPath>();
   for (const change of committedChanges) {
@@ -515,7 +517,7 @@ export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise
         baseSha: workingBaseSha,
         headSha: workingHeadSha,
         commitMetaBySha: workingCommitMetaBySha,
-        includeWorkingTreeNode: true,
+        includeWorkingTreeNode: workingChangeKeys.has(changeKey(change)),
       });
       return toDiffReviewFile(change, revision);
     }),

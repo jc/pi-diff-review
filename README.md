@@ -5,6 +5,7 @@
 >
 > **What this fork adds**
 > - **Per-file review checkpoints** so files can stay marked as reviewed across later review sessions
+> - **Working-tree review carry-forward** so reviewed uncommitted file states stay reviewed until they change, and unchanged commits inherit that reviewed state
 > - **Checkpoint-based diff ranges** that can start from the last reviewed commit instead of always from base
 > - **Keyboard shortcuts for review flow**, including toggling reviewed state and jumping between files and hunks
 >

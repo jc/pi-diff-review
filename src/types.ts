@@ -29,6 +29,7 @@ export interface FileRevisionData {
   nodeContents: Record<string, string>;
   headNodeId: string;
   checkpointNodeId: string | null;
+  reviewedNodeId: string | null;
   defaultFromNodeId: string;
   defaultToNodeId: string;
 }
@@ -76,14 +77,15 @@ export interface ReviewCancelPayload {
   type: "cancel";
 }
 
-export interface ReviewCheckpointSavePayload {
-  type: "checkpoint-save";
-  fileKey: string;
-  commitSha: string;
+export interface ReviewStateSavePayload {
+  type: "review-state-save";
+  mode: ReviewMode;
+  fileId: string;
+  toNodeId: string;
 }
 
-export interface ReviewCheckpointClearPayload {
-  type: "checkpoint-clear";
+export interface ReviewStateClearPayload {
+  type: "review-state-clear";
   fileKey: string;
 }
 
@@ -110,8 +112,8 @@ export interface ReviewClipboardWriteRequestPayload {
 export type ReviewWindowMessage =
   | ReviewSubmitPayload
   | ReviewCancelPayload
-  | ReviewCheckpointSavePayload
-  | ReviewCheckpointClearPayload
+  | ReviewStateSavePayload
+  | ReviewStateClearPayload
   | ReviewRangeContentRequestPayload
   | ReviewClipboardReadRequestPayload
   | ReviewClipboardWriteRequestPayload;

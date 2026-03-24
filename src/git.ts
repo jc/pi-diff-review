@@ -359,6 +359,7 @@ async function buildFileRevisionData(options: RevisionBuildOptions): Promise<Fil
     nodeContents,
     headNodeId,
     checkpointNodeId: null,
+    reviewedNodeId: null,
     defaultFromNodeId: "base",
     defaultToNodeId: headNodeId,
   };

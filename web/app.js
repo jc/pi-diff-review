@@ -31,6 +31,7 @@ function normalizeReviewData(data) {
       },
       headNodeId: "c:legacy-head",
       checkpointNodeId: null,
+      reviewedNodeId: null,
       defaultFromNodeId: "base",
       defaultToNodeId: "c:legacy-head",
     },
@@ -122,7 +123,7 @@ for (const mode of MODES) {
   for (const file of modeData(mode).files ?? []) {
     const key = `${mode}:${file.id}`;
     const workingTreeNode = file.revision.nodes.find((node) => node.kind === "working-tree");
-    const isUnreviewedWorkingMode = mode === "working" && file.revision.checkpointNodeId == null && workingTreeNode != null;
+    const isUnreviewedWorkingMode = mode === "working" && file.revision.reviewedNodeId == null && workingTreeNode != null;
 
     state.selections[key] = {
       from: isUnreviewedWorkingMode ? "base" : file.revision.defaultFromNodeId,
@@ -189,12 +190,12 @@ function activeFile() {
   return filesForMode().find((file) => file.id === id) ?? null;
 }
 
-function selectionKey(file) {
-  return `${state.mode}:${file.id}`;
+function selectionKey(file, mode = state.mode) {
+  return `${mode}:${file.id}`;
 }
 
-function fileSelection(file) {
-  const key = selectionKey(file);
+function fileSelection(file, mode = state.mode) {
+  const key = selectionKey(file, mode);
   if (!state.selections[key]) {
     state.selections[key] = {
       from: file.revision.defaultFromNodeId,
@@ -204,8 +205,8 @@ function fileSelection(file) {
   return state.selections[key];
 }
 
-function fileContentCache(file) {
-  const key = selectionKey(file);
+function fileContentCache(file, mode = state.mode) {
+  const key = selectionKey(file, mode);
   if (!state.contentCache[key]) {
     state.contentCache[key] = {
       ...(file.revision.nodeContents || {}),
@@ -272,8 +273,79 @@ function clampSelection(file, draft) {
   };
 }
 
-function setFileSelection(file, selection) {
-  state.selections[selectionKey(file)] = clampSelection(file, selection);
+function setFileSelection(file, selection, mode = state.mode) {
+  state.selections[selectionKey(file, mode)] = clampSelection(file, selection);
+}
+
+function modeDefaultToNodeId(file, mode) {
+  if (mode === "working") {
+    return workingTreeNode(file)?.id ?? file.revision.headNodeId;
+  }
+
+  return file.revision.headNodeId;
+}
+
+function filesWithSameKey(fileKey) {
+  const matches = [];
+
+  for (const mode of MODES) {
+    for (const file of modeData(mode).files ?? []) {
+      if (file.fileKey === fileKey) {
+        matches.push({ mode, file });
+      }
+    }
+  }
+
+  return matches;
+}
+
+function commitAnchorNodeId(file) {
+  const headNode = nodeById(file, file.revision.headNodeId);
+  return headNode?.kind === "commit" ? headNode.id : null;
+}
+
+function nextCommitNodeId(file, nodeId) {
+  const commitNodes = file.revision.nodes.filter((node) => node.kind === "commit");
+  const currentCommitIndex = commitNodes.findIndex((node) => node.id === nodeId);
+  return currentCommitIndex >= 0 && currentCommitIndex < commitNodes.length - 1
+    ? commitNodes[currentCommitIndex + 1].id
+    : nodeId;
+}
+
+function resetReviewState(candidate) {
+  candidate.file.revision.checkpointNodeId = null;
+  candidate.file.revision.reviewedNodeId = null;
+  candidate.file.revision.defaultFromNodeId = "base";
+  candidate.file.revision.defaultToNodeId = modeDefaultToNodeId(candidate.file, candidate.mode);
+  setFileSelection(candidate.file, { from: "base", to: candidate.file.revision.defaultToNodeId }, candidate.mode);
+}
+
+function applyWorkingTreeReviewState(candidate) {
+  const anchorNodeId = commitAnchorNodeId(candidate.file);
+  candidate.file.revision.checkpointNodeId = anchorNodeId;
+  candidate.file.revision.reviewedNodeId = candidate.mode === "working"
+    ? (workingTreeNode(candidate.file)?.id ?? anchorNodeId)
+    : anchorNodeId;
+  candidate.file.revision.defaultFromNodeId = anchorNodeId ?? "base";
+  candidate.file.revision.defaultToNodeId = modeDefaultToNodeId(candidate.file, candidate.mode);
+  setFileSelection(candidate.file, {
+    from: candidate.file.revision.defaultFromNodeId,
+    to: candidate.file.revision.defaultToNodeId,
+  }, candidate.mode);
+}
+
+function applyCommitReviewState(candidate, commitNodeId) {
+  const matchingCommitNode = nodeById(candidate.file, commitNodeId);
+  if (!matchingCommitNode || matchingCommitNode.kind !== "commit") return;
+
+  candidate.file.revision.checkpointNodeId = matchingCommitNode.id;
+  candidate.file.revision.reviewedNodeId = matchingCommitNode.id;
+  candidate.file.revision.defaultFromNodeId = matchingCommitNode.id;
+  candidate.file.revision.defaultToNodeId = modeDefaultToNodeId(candidate.file, candidate.mode);
+  setFileSelection(candidate.file, {
+    from: matchingCommitNode.id,
+    to: nextCommitNodeId(candidate.file, matchingCommitNode.id),
+  }, candidate.mode);
 }
 
 function floorNodes(file) {
@@ -312,10 +384,10 @@ function reviewCeilingNodeId(file, mode = state.mode) {
 }
 
 function fileReviewStatus(file, mode = state.mode) {
-  const checkpointNodeId = file.revision.checkpointNodeId;
-  if (!checkpointNodeId) return "unreviewed";
+  const reviewedNodeId = file.revision.reviewedNodeId;
+  if (!reviewedNodeId) return "unreviewed";
 
-  const checkpointIndex = nodeIndex(file, checkpointNodeId);
+  const checkpointIndex = nodeIndex(file, reviewedNodeId);
   const ceilingIndex = nodeIndex(file, reviewCeilingNodeId(file, mode));
 
   if (checkpointIndex === -1 || ceilingIndex === -1) return "unreviewed";
@@ -323,14 +395,14 @@ function fileReviewStatus(file, mode = state.mode) {
 }
 
 function isFileReviewed(file) {
-  return file.revision.checkpointNodeId != null;
+  return file.revision.reviewedNodeId != null;
 }
 
 function fileReviewDotTitle(file, mode = state.mode) {
   const status = fileReviewStatus(file, mode);
   if (status === "unreviewed") return "Unreviewed";
 
-  const checkpointNode = nodeById(file, file.revision.checkpointNodeId);
+  const checkpointNode = nodeById(file, file.revision.reviewedNodeId);
   const ceilingNode = nodeById(file, reviewCeilingNodeId(file, mode));
 
   if (status === "complete") {
@@ -343,13 +415,13 @@ function fileReviewDotTitle(file, mode = state.mode) {
 function reviewToggleState(file) {
   const selection = fileSelection(file);
   const toNode = nodeById(file, selection.to);
-  const checkpointNode = nodeById(file, file.revision.checkpointNodeId);
+  const reviewedNode = nodeById(file, file.revision.reviewedNodeId);
 
   const toIndex = nodeIndex(file, selection.to);
-  const checkpointIndex = file.revision.checkpointNodeId ? nodeIndex(file, file.revision.checkpointNodeId) : -1;
+  const checkpointIndex = file.revision.reviewedNodeId ? nodeIndex(file, file.revision.reviewedNodeId) : -1;
 
-  const hasCheckpoint = checkpointNode != null;
-  const canMark = toNode?.kind === "commit";
+  const hasCheckpoint = reviewedNode != null;
+  const canMark = toNode != null && toNode.kind !== "base";
   const reviewedThroughSelectedCommit = canMark && hasCheckpoint && checkpointIndex >= toIndex;
 
   if (reviewedThroughSelectedCommit) {
@@ -357,8 +429,8 @@ function reviewToggleState(file) {
       action: "clear",
       disabled: false,
       icon: "reviewed",
-      label: "Reviewed through selected commit",
-      title: "Reviewed through selected To commit. Click to clear reviewed state.",
+      label: "Reviewed through selected point",
+      title: "Reviewed through the selected To point. Click to clear reviewed state.",
       className: "cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#2ea043]/40 bg-[#238636]/15 text-[#3fb950] hover:bg-[#238636]/25",
     };
   }
@@ -368,8 +440,8 @@ function reviewToggleState(file) {
       action: "clear",
       disabled: false,
       icon: "reviewed",
-      label: "Checkpoint saved (click to clear)",
-      title: "A checkpoint exists, but To is not a commit. Click to clear reviewed state.",
+      label: "Review state saved (click to clear)",
+      title: "A review state exists, but To is not reviewable. Click to clear reviewed state.",
       className: "cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#2ea043]/40 bg-[#238636]/15 text-[#3fb950] hover:bg-[#238636]/25",
     };
   }
@@ -379,8 +451,8 @@ function reviewToggleState(file) {
       action: "mark",
       disabled: false,
       icon: "pending",
-      label: "Not reviewed through selected commit",
-      title: "Click to mark reviewed through selected To commit.",
+      label: "Not reviewed through selected point",
+      title: "Click to mark reviewed through the selected To point.",
       className: "cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#f85149]/40 bg-[#f85149]/15 text-[#ff7b72] hover:bg-[#f85149]/25",
     };
   }
@@ -389,8 +461,8 @@ function reviewToggleState(file) {
     action: null,
     disabled: true,
     icon: "pending",
-    label: "Select a commit in To to mark reviewed",
-    title: "Mark reviewed is available only when To is a commit.",
+    label: "Select a reviewable To point",
+    title: "Mark reviewed is available only when To is a commit or Working tree.",
     className: "cursor-not-allowed inline-flex h-8 w-8 items-center justify-center rounded-md border border-review-border bg-review-panel text-review-muted opacity-60",
   };
 }
@@ -710,7 +782,7 @@ function renderRevisionStrip() {
 
     for (const node of row.nodes) {
       const isSelected = row.selectedId === node.id;
-      const isCheckpoint = file.revision.checkpointNodeId === node.id;
+      const isCheckpoint = file.revision.reviewedNodeId === node.id;
       const isHead = file.revision.headNodeId === node.id;
 
       let text = humanizeNode(node);
@@ -773,8 +845,8 @@ function updateRangeSummary() {
   const to = nodeById(file, selection.to);
 
   const parts = [`${humanizeNode(from)} → ${humanizeNode(to)}`];
-  if (file.revision.checkpointNodeId) {
-    const checkpointNode = nodeById(file, file.revision.checkpointNodeId);
+  if (file.revision.reviewedNodeId) {
+    const checkpointNode = nodeById(file, file.revision.reviewedNodeId);
     parts.push(`reviewed through ${humanizeNode(checkpointNode)}`);
   } else {
     parts.push("unreviewed");
@@ -814,22 +886,16 @@ function performReviewToggle(file) {
   const toggle = reviewToggleState(file);
   if (toggle.disabled || toggle.action == null) return;
 
+  const relatedFiles = filesWithSameKey(file.fileKey);
+
   if (toggle.action === "clear") {
-    const checkpointNodeId = file.revision.checkpointNodeId;
-    if (!checkpointNodeId) return;
+    const reviewedNodeId = file.revision.reviewedNodeId;
+    if (!reviewedNodeId) return;
 
-    file.revision.checkpointNodeId = null;
-    file.revision.defaultFromNodeId = "base";
-
-    const workingNode = workingTreeNode(file);
-    const defaultToNodeId = state.mode === "working" && workingNode != null
-      ? workingNode.id
-      : file.revision.defaultToNodeId;
-
-    setFileSelection(file, { from: "base", to: defaultToNodeId });
+    for (const candidate of relatedFiles) resetReviewState(candidate);
 
     window.glimpse.send({
-      type: "checkpoint-clear",
+      type: "review-state-clear",
       fileKey: file.fileKey,
     });
 
@@ -839,26 +905,22 @@ function performReviewToggle(file) {
 
   const selection = fileSelection(file);
   const toNode = nodeById(file, selection.to);
-  if (!toNode || toNode.kind !== "commit") return;
+  if (!toNode || toNode.kind === "base") return;
 
-  file.revision.checkpointNodeId = toNode.id;
-  file.revision.defaultFromNodeId = toNode.id;
+  for (const candidate of relatedFiles) {
+    if (toNode.kind === "working-tree") {
+      applyWorkingTreeReviewState(candidate);
+      continue;
+    }
 
-  const commitNodes = file.revision.nodes.filter((node) => node.kind === "commit");
-  const currentCommitIndex = commitNodes.findIndex((node) => node.id === toNode.id);
-  const nextCommitNode = currentCommitIndex >= 0 && currentCommitIndex < commitNodes.length - 1
-    ? commitNodes[currentCommitIndex + 1]
-    : null;
-
-  setFileSelection(file, {
-    from: toNode.id,
-    to: nextCommitNode?.id ?? toNode.id,
-  });
+    applyCommitReviewState(candidate, toNode.id);
+  }
 
   window.glimpse.send({
-    type: "checkpoint-save",
-    fileKey: file.fileKey,
-    commitSha: toNode.sha,
+    type: "review-state-save",
+    mode: state.mode,
+    fileId: file.id,
+    toNodeId: toNode.id,
   });
 
   renderAll({ preserveScroll: true });
@@ -942,7 +1004,7 @@ function showShortcutsModal() {
       <div class="space-y-2 text-sm text-review-text">
         <div class="grid grid-cols-[160px_1fr] gap-x-3 gap-y-1">
           <div class="font-mono text-xs text-review-muted">?</div><div>Open this shortcuts dialog</div>
-          <div class="font-mono text-xs text-review-muted">R</div><div>Toggle reviewed through selected <strong>To</strong> commit</div>
+          <div class="font-mono text-xs text-review-muted">R</div><div>Toggle reviewed through selected <strong>To</strong> point</div>
           <div class="font-mono text-xs text-review-muted">B</div><div>Set <strong>From</strong> to checkpoint (or Base)</div>
           <div class="font-mono text-xs text-review-muted">H</div><div>Set <strong>To</strong> to Head commit</div>
           <div class="font-mono text-xs text-review-muted">[ / ]</div><div>Move <strong>To</strong> older / newer</div>

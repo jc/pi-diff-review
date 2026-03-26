@@ -14,7 +14,32 @@ const MODES = ["committed", "working"];
 
 function normalizeReviewData(data) {
   if (data && data.modes && data.modes.committed && data.modes.working) {
-    return data;
+    const normalizedModes = {};
+
+    for (const mode of MODES) {
+      const modeData = data.modes[mode] || {};
+      normalizedModes[mode] = {
+        ...modeData,
+        baseRef: modeData.baseRef ?? modeData.targetRef ?? null,
+        files: Array.isArray(modeData.files)
+          ? modeData.files.map((file) => ({
+            ...file,
+            revision: {
+              ...file.revision,
+              baseMismatch: file.revision?.baseMismatch === true,
+              baseRefChanged: file.revision?.baseRefChanged === true,
+              savedBaseRef: file.revision?.savedBaseRef ?? null,
+              savedBaseSha: file.revision?.savedBaseSha ?? null,
+            },
+          }))
+          : [],
+      };
+    }
+
+    return {
+      ...data,
+      modes: normalizedModes,
+    };
   }
 
   const legacyFiles = Array.isArray(data?.files) ? data.files.map((file, index) => ({
@@ -34,6 +59,10 @@ function normalizeReviewData(data) {
       reviewedNodeId: null,
       defaultFromNodeId: "base",
       defaultToNodeId: "c:legacy-head",
+      baseMismatch: false,
+      baseRefChanged: false,
+      savedBaseRef: null,
+      savedBaseSha: null,
     },
   })) : [];
 
@@ -51,7 +80,7 @@ function normalizeReviewData(data) {
         mode: "committed",
         available: false,
         notice: "Committed history mode unavailable in this payload.",
-        targetRef: null,
+        baseRef: null,
         baseSha: null,
         headSha: null,
         files: [],
@@ -60,7 +89,7 @@ function normalizeReviewData(data) {
         mode: "working",
         available: true,
         notice: null,
-        targetRef: null,
+        baseRef: null,
         baseSha: null,
         headSha: null,
         files: legacyFiles,
@@ -139,8 +168,10 @@ for (const mode of MODES) {
 const repoRootEl = document.getElementById("repo-root");
 const fileTreeEl = document.getElementById("file-tree");
 const summaryEl = document.getElementById("summary");
+const currentScopeEl = document.getElementById("current-scope");
 const currentFileLabelEl = document.getElementById("current-file-label");
 const rangeSummaryEl = document.getElementById("range-summary");
+const currentFileScopeNoticeEl = document.getElementById("current-file-scope-notice");
 const fileCommentsContainer = document.getElementById("file-comments-container");
 const editorContainerEl = document.getElementById("editor-container");
 const submitButton = document.getElementById("submit-button");
@@ -312,11 +343,22 @@ function nextCommitNodeId(file, nodeId) {
     : nodeId;
 }
 
+function applyCurrentScopeMetadata(candidate) {
+  candidate.file.revision.baseMismatch = false;
+  candidate.file.revision.baseRefChanged = false;
+  candidate.file.revision.savedBaseRef = modeData(candidate.mode).baseRef ?? null;
+  candidate.file.revision.savedBaseSha = modeData(candidate.mode).baseSha ?? null;
+}
+
 function resetReviewState(candidate) {
   candidate.file.revision.checkpointNodeId = null;
   candidate.file.revision.reviewedNodeId = null;
   candidate.file.revision.defaultFromNodeId = "base";
   candidate.file.revision.defaultToNodeId = modeDefaultToNodeId(candidate.file, candidate.mode);
+  candidate.file.revision.baseMismatch = false;
+  candidate.file.revision.baseRefChanged = false;
+  candidate.file.revision.savedBaseRef = null;
+  candidate.file.revision.savedBaseSha = null;
   setFileSelection(candidate.file, { from: "base", to: candidate.file.revision.defaultToNodeId }, candidate.mode);
 }
 
@@ -328,6 +370,7 @@ function applyWorkingTreeReviewState(candidate) {
     : anchorNodeId;
   candidate.file.revision.defaultFromNodeId = anchorNodeId ?? "base";
   candidate.file.revision.defaultToNodeId = modeDefaultToNodeId(candidate.file, candidate.mode);
+  applyCurrentScopeMetadata(candidate);
   setFileSelection(candidate.file, {
     from: candidate.file.revision.defaultFromNodeId,
     to: candidate.file.revision.defaultToNodeId,
@@ -342,6 +385,7 @@ function applyCommitReviewState(candidate, commitNodeId) {
   candidate.file.revision.reviewedNodeId = matchingCommitNode.id;
   candidate.file.revision.defaultFromNodeId = matchingCommitNode.id;
   candidate.file.revision.defaultToNodeId = modeDefaultToNodeId(candidate.file, candidate.mode);
+  applyCurrentScopeMetadata(candidate);
   setFileSelection(candidate.file, {
     from: matchingCommitNode.id,
     to: nextCommitNodeId(candidate.file, matchingCommitNode.id),
@@ -592,6 +636,61 @@ function statusBadgeClass(status) {
   }
 }
 
+function shortSha(sha) {
+  return typeof sha === "string" && sha.length > 0 ? sha.slice(0, 7) : null;
+}
+
+function activeScopeSummary() {
+  const mode = activeModeData();
+  const parts = [];
+
+  parts.push(`Base ${mode.baseRef || "auto target unavailable"}`);
+
+  if (mode.baseSha) {
+    parts.push(`merge-base ${shortSha(mode.baseSha)}`);
+  }
+
+  if (mode.headSha) {
+    parts.push(`HEAD ${shortSha(mode.headSha)}`);
+  }
+
+  return parts.join(" • ");
+}
+
+function fileScopeWarning(file, mode = state.mode) {
+  if (!file) return null;
+
+  const currentMode = modeData(mode);
+  const currentBaseRef = currentMode.baseRef || "current base";
+  const currentBaseSha = shortSha(currentMode.baseSha) || "unknown";
+  const savedBaseRef = file.revision.savedBaseRef || "unknown base";
+  const savedBaseSha = shortSha(file.revision.savedBaseSha) || "unknown";
+
+  if (file.revision.baseMismatch) {
+    return {
+      tone: "warning",
+      shortLabel: "Base",
+      label: "Reviewed against a different base",
+      summary: `saved against ${savedBaseRef} @ ${savedBaseSha}`,
+      title: `Saved scope: ${savedBaseRef} @ ${savedBaseSha}. Current scope: ${currentBaseRef} @ ${currentBaseSha}.`,
+      className: "border-amber-500/30 bg-amber-500/10 text-amber-200",
+    };
+  }
+
+  if (file.revision.baseRefChanged) {
+    return {
+      tone: "info",
+      shortLabel: "Ref",
+      label: "Reviewed against a different ref",
+      summary: `saved against ${savedBaseRef}`,
+      title: `Saved base ref: ${savedBaseRef}. Current base ref: ${currentBaseRef}. Merge-base is unchanged at ${currentBaseSha}.`,
+      className: "border-sky-500/30 bg-sky-500/10 text-sky-200",
+    };
+  }
+
+  return null;
+}
+
 function updateModeButtons() {
   const committedAvailable = modeData("committed").available;
 
@@ -676,6 +775,7 @@ function renderTreeNode(node, depth) {
       : reviewStatus === "partial"
         ? "text-[#d29922]"
         : "text-transparent";
+    const scopeWarning = fileScopeWarning(file);
     const button = document.createElement("button");
     button.type = "button";
     button.className = [
@@ -689,6 +789,7 @@ function renderTreeNode(node, depth) {
         <span class="truncate">${escapeHtml(child.name)}</span>
       </span>
       <span class="flex shrink-0 items-center gap-1.5">
+        ${scopeWarning ? `<span class="rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${scopeWarning.className}" title="${escapeHtml(scopeWarning.title)}">${escapeHtml(scopeWarning.shortLabel)}</span>` : ""}
         ${count > 0 ? `<span class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[#1f2937] px-1 text-[10px] font-medium text-[#c9d1d9]">${count}</span>` : ""}
         <span class="font-medium ${statusBadgeClass(file.status)}">${escapeHtml(statusLabel(file.status).charAt(0))}</span>
       </span>
@@ -710,6 +811,28 @@ function renderTree() {
   const comments = state.comments.length;
   const committedSuffix = state.mode === "committed" ? "commits" : "working tree";
   summaryEl.textContent = `${files.length} file(s) • ${comments} comment(s) • ${committedSuffix}${state.overallComment ? " • overall note" : ""}`;
+}
+
+function renderScopeSummary() {
+  if (!currentScopeEl) return;
+  currentScopeEl.textContent = activeScopeSummary();
+}
+
+function renderCurrentFileScopeNotice() {
+  if (!currentFileScopeNoticeEl) return;
+
+  const file = activeFile();
+  const scopeWarning = fileScopeWarning(file);
+  if (!scopeWarning) {
+    currentFileScopeNoticeEl.className = "hidden mt-1 text-[11px]";
+    currentFileScopeNoticeEl.textContent = "";
+    currentFileScopeNoticeEl.title = "";
+    return;
+  }
+
+  currentFileScopeNoticeEl.className = `mt-1 inline-flex w-fit rounded border px-2 py-1 text-[11px] ${scopeWarning.className}`;
+  currentFileScopeNoticeEl.textContent = scopeWarning.label;
+  currentFileScopeNoticeEl.title = scopeWarning.title;
 }
 
 function renderNotice() {
@@ -850,6 +973,11 @@ function updateRangeSummary() {
     parts.push(`reviewed through ${humanizeNode(checkpointNode)}`);
   } else {
     parts.push("unreviewed");
+  }
+
+  const scopeWarning = fileScopeWarning(file);
+  if (scopeWarning) {
+    parts.push(scopeWarning.summary);
   }
 
   if (state.lastRangeSwitchMs != null) {
@@ -1297,9 +1425,11 @@ function ensureActiveFile() {
 function renderAll(options = {}) {
   ensureActiveFile();
   updateModeButtons();
+  renderScopeSummary();
   renderNotice();
   renderTree();
   renderRevisionStrip();
+  renderCurrentFileScopeNotice();
   updateToggleButtons();
   submitButton.disabled = false;
   if (diffEditor && monacoApi) {

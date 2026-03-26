@@ -135,6 +135,7 @@
         <button id="mode-committed-button" class="cursor-pointer px-3 py-1.5 text-review-text hover:bg-[#21262d]">Committed</button>
         <button id="mode-working-button" class="cursor-pointer border-l border-review-border px-3 py-1.5 text-review-text hover:bg-[#21262d]">Working tree</button>
       </div>
+      <div id="current-scope" class="max-w-[32rem] truncate text-[11px] text-review-muted"></div>
       <div id="summary" class="max-w-[24rem] truncate text-[11px] text-review-muted"></div>
       <button id="shortcuts-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-semibold text-review-text hover:bg-[#21262d]" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
       <button id="overall-comment-button" class="cursor-pointer rounded-md border border-review-border bg-review-panel px-3 py-1.5 text-xs font-medium text-review-text hover:bg-[#21262d]">Overall note</button>
@@ -154,6 +155,7 @@
         <div class="min-w-0">
           <div id="current-file-label" class="truncate text-sm font-semibold text-white"></div>
           <div id="range-summary" class="mt-0.5 text-[11px] text-review-muted">Select a file to review.</div>
+          <div id="current-file-scope-notice" class="hidden mt-1 text-[11px]"></div>
         </div>
         <div class="flex items-center gap-3">
           <button id="toggle-reviewed-button" class="cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-md border border-review-border bg-review-panel text-review-text hover:bg-[#21262d]" aria-label="Review toggle" title="Review toggle">

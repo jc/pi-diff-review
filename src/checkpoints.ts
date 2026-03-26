@@ -84,6 +84,8 @@ function sanitizeReviewStateRecord(value: unknown): ReviewStateRecord | null {
     commitSha: typeof commitSha === "string" ? commitSha : null,
     updatedAt: typeof updatedAt === "string" && updatedAt.length > 0 ? updatedAt : new Date().toISOString(),
     workingTree,
+    baseRef: typeof (value as { baseRef?: unknown }).baseRef === "string" ? (value as { baseRef: string }).baseRef : null,
+    baseSha: typeof (value as { baseSha?: unknown }).baseSha === "string" ? (value as { baseSha: string }).baseSha : null,
   };
 }
 
@@ -102,6 +104,8 @@ function sanitizeLegacyStore(value: unknown): CheckpointStore | null {
         commitSha,
         updatedAt: typeof updatedAt === "string" && updatedAt.length > 0 ? updatedAt : new Date().toISOString(),
         workingTree: null,
+        baseRef: null,
+        baseSha: null,
       };
     }
   }
@@ -243,6 +247,8 @@ export async function saveRepoCheckpoint(repoRoot: string, fileKey: string, comm
   await saveRepoReviewState(repoRoot, fileKey, {
     commitSha,
     workingTree: null,
+    baseRef: null,
+    baseSha: null,
   });
 }
 

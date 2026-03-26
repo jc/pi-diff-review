@@ -8,6 +8,11 @@ import {
   type ReviewStateRecord,
 } from "./review-state.js";
 
+const currentScope = {
+  baseRef: "origin/main",
+  baseSha: "base-main",
+};
+
 function buildFile(overrides: Partial<DiffReviewFile> = {}): DiffReviewFile {
   return {
     id: "src/a.ts=>src/a.ts",
@@ -34,6 +39,10 @@ function buildFile(overrides: Partial<DiffReviewFile> = {}): DiffReviewFile {
       reviewedNodeId: null,
       defaultFromNodeId: "base",
       defaultToNodeId: "working-tree",
+      baseMismatch: false,
+      baseRefChanged: false,
+      savedBaseRef: null,
+      savedBaseSha: null,
     },
     ...overrides,
   };
@@ -42,12 +51,14 @@ function buildFile(overrides: Partial<DiffReviewFile> = {}): DiffReviewFile {
 test("createWorkingTreeReviewState captures the current head commit and working-tree hash", () => {
   const file = buildFile();
 
-  const state = createWorkingTreeReviewState(file);
+  const state = createWorkingTreeReviewState(file, currentScope);
 
   assert.equal(state.commitSha, "c3");
   assert.equal(state.workingTree?.contentHash, hashContent("working-tree\n"));
   assert.equal(state.workingTree?.oldPath, "src/a.ts");
   assert.equal(state.workingTree?.newPath, "src/a.ts");
+  assert.equal(state.baseRef, "origin/main");
+  assert.equal(state.baseSha, "base-main");
 });
 
 test("resolveReviewState marks unchanged reviewed working-tree snapshots as reviewed", () => {
@@ -61,14 +72,18 @@ test("resolveReviewState marks unchanged reviewed working-tree snapshots as revi
       newPath: "src/a.ts",
       contentHash: hashContent("working-tree\n"),
     },
+    baseRef: "origin/main",
+    baseSha: "base-main",
   };
 
-  const resolved = resolveReviewState(file, "working", new Map([[file.fileKey, record]]));
+  const resolved = resolveReviewState(file, "working", new Map([[file.fileKey, record]]), currentScope);
 
   assert.equal(resolved.checkpointNodeId, "c:c3");
   assert.equal(resolved.reviewedNodeId, "working-tree");
   assert.equal(resolved.defaultFromNodeId, "c:c3");
   assert.equal(resolved.defaultToNodeId, "working-tree");
+  assert.equal(resolved.baseMismatch, false);
+  assert.equal(resolved.baseRefChanged, false);
 });
 
 test("resolveReviewState promotes matching reviewed snapshots to the latest matching commit", () => {
@@ -91,6 +106,10 @@ test("resolveReviewState promotes matching reviewed snapshots to the latest matc
       reviewedNodeId: null,
       defaultFromNodeId: "base",
       defaultToNodeId: "working-tree",
+      baseMismatch: false,
+      baseRefChanged: false,
+      savedBaseRef: null,
+      savedBaseSha: null,
     },
   });
 
@@ -103,9 +122,11 @@ test("resolveReviewState promotes matching reviewed snapshots to the latest matc
       newPath: "src/a.ts",
       contentHash: hashContent("reviewed-state\n"),
     },
+    baseRef: "origin/main",
+    baseSha: "base-main",
   };
 
-  const resolved = resolveReviewState(file, "working", new Map([[file.fileKey, record]]));
+  const resolved = resolveReviewState(file, "working", new Map([[file.fileKey, record]]), currentScope);
 
   assert.equal(resolved.checkpointNodeId, "c:c4");
   assert.equal(resolved.reviewedNodeId, "c:c4");
@@ -130,6 +151,10 @@ test("resolveReviewState falls back to the reviewed commit when the working-tree
       reviewedNodeId: null,
       defaultFromNodeId: "base",
       defaultToNodeId: "working-tree",
+      baseMismatch: false,
+      baseRefChanged: false,
+      savedBaseRef: null,
+      savedBaseSha: null,
     },
   });
 
@@ -142,9 +167,11 @@ test("resolveReviewState falls back to the reviewed commit when the working-tree
       newPath: "src/a.ts",
       contentHash: hashContent("reviewed-state\n"),
     },
+    baseRef: "origin/main",
+    baseSha: "base-main",
   };
 
-  const resolved = resolveReviewState(file, "working", new Map([[file.fileKey, record]]));
+  const resolved = resolveReviewState(file, "working", new Map([[file.fileKey, record]]), currentScope);
 
   assert.equal(resolved.checkpointNodeId, "c:c3");
   assert.equal(resolved.reviewedNodeId, "c:c3");
@@ -170,9 +197,11 @@ test("resolveReviewState can recover a renamed file from a single alias match", 
       newPath: "src/newer.ts",
       contentHash: hashContent("working-tree\n"),
     },
+    baseRef: "origin/main",
+    baseSha: "base-main",
   };
 
-  const resolved = resolveReviewState(file, "working", new Map([["src/old.ts=>src/newer.ts", record]]));
+  const resolved = resolveReviewState(file, "working", new Map([["src/old.ts=>src/newer.ts", record]]), currentScope);
 
   assert.equal(resolved.reviewedNodeId, "working-tree");
 });
@@ -194,10 +223,65 @@ test("resolveReviewState fails closed for delete and recreate at the same path",
       newPath: null,
       contentHash: hashContent("working-tree\n"),
     },
+    baseRef: "origin/main",
+    baseSha: "base-main",
   };
 
-  const resolved = resolveReviewState(file, "working", new Map([["src/a.ts=>", record]]));
+  const resolved = resolveReviewState(file, "working", new Map([["src/a.ts=>", record]]), currentScope);
 
   assert.equal(resolved.reviewedNodeId, null);
   assert.equal(resolved.checkpointNodeId, null);
+});
+
+test("resolveReviewState flags changed base sha without discarding the review anchor", () => {
+  const file = buildFile();
+  const record: ReviewStateRecord = {
+    updatedAt: "2026-03-23T00:00:00.000Z",
+    commitSha: "c3",
+    workingTree: null,
+    baseRef: "origin/release/1.0",
+    baseSha: "base-release",
+  };
+
+  const resolved = resolveReviewState(file, "committed", new Map([[file.fileKey, record]]), currentScope);
+
+  assert.equal(resolved.checkpointNodeId, "c:c3");
+  assert.equal(resolved.reviewedNodeId, "c:c3");
+  assert.equal(resolved.baseMismatch, true);
+  assert.equal(resolved.baseRefChanged, true);
+  assert.equal(resolved.savedBaseRef, "origin/release/1.0");
+  assert.equal(resolved.savedBaseSha, "base-release");
+});
+
+test("resolveReviewState keeps legacy records without base metadata compatible", () => {
+  const file = buildFile();
+  const record: ReviewStateRecord = {
+    updatedAt: "2026-03-23T00:00:00.000Z",
+    commitSha: "c3",
+    workingTree: null,
+    baseRef: null,
+    baseSha: null,
+  };
+
+  const resolved = resolveReviewState(file, "committed", new Map([[file.fileKey, record]]), currentScope);
+
+  assert.equal(resolved.checkpointNodeId, "c:c3");
+  assert.equal(resolved.baseMismatch, false);
+  assert.equal(resolved.baseRefChanged, false);
+});
+
+test("resolveReviewState treats a changed ref with the same merge-base as a softer ref change", () => {
+  const file = buildFile();
+  const record: ReviewStateRecord = {
+    updatedAt: "2026-03-23T00:00:00.000Z",
+    commitSha: "c3",
+    workingTree: null,
+    baseRef: "origin/release/1.0",
+    baseSha: "base-main",
+  };
+
+  const resolved = resolveReviewState(file, "committed", new Map([[file.fileKey, record]]), currentScope);
+
+  assert.equal(resolved.baseMismatch, false);
+  assert.equal(resolved.baseRefChanged, true);
 });

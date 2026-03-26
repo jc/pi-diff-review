@@ -7,6 +7,8 @@
 > - **Per-file review checkpoints** so files can stay marked as reviewed across later review sessions
 > - **Working-tree review carry-forward** so reviewed uncommitted file states stay reviewed until they change, and unchanged commits inherit that reviewed state
 > - **Checkpoint-based diff ranges** that can start from the last reviewed commit instead of always from base
+> - **Base-branch review scope selection** so `/diff-review` can open against the auto target/default branch or an explicitly chosen branch
+> - **Scope-aware review warnings** so saved review anchors survive base changes while the UI tells you when they came from a different base or ref
 > - **Keyboard shortcuts for review flow**, including toggling reviewed state and jumping between files and hunks
 >
 > The rest of this README largely follows upstream so future syncs stay simple.
@@ -27,11 +29,14 @@ Adds a `/diff-review` command to pi.
 
 The command:
 
-1. collects the current git diff against `HEAD`
-2. opens a native review window
-3. shows changed files in a Monaco diff editor
-4. lets you draft comments on the original side, modified side, or whole file
-5. inserts the resulting feedback prompt into the pi editor when you submit
+1. lets you choose the review base (`Auto target/default branch` or an explicit branch)
+2. collects the current git diff from `merge-base(base, HEAD)` to `HEAD`
+3. opens a native review window
+4. shows changed files in a Monaco diff editor
+5. lets you draft comments on the original side, modified side, or whole file
+6. preserves prior review anchors, but recomputes reviewed/pending state for the current scope
+7. shows a non-blocking warning when a file was last reviewed against a different base or ref
+8. inserts the resulting feedback prompt into the pi editor when you submit
 
 ## Requirements
 

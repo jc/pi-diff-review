@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type {
   ChangeStatus,
+  DiffReviewBaseSelection,
   DiffReviewFile,
   DiffReviewWindowData,
   FileRevisionCommitNode,
@@ -163,7 +164,7 @@ async function getHeadSha(pi: ExtensionAPI, repoRoot: string): Promise<string | 
   return result.stdout.trim() || null;
 }
 
-async function refExists(pi: ExtensionAPI, repoRoot: string, ref: string): Promise<boolean> {
+export async function refExists(pi: ExtensionAPI, repoRoot: string, ref: string): Promise<boolean> {
   const result = await runGitAllowFailure(pi, repoRoot, ["rev-parse", "--verify", "--quiet", ref]);
   return result.ok;
 }
@@ -183,7 +184,7 @@ function candidateRefsFromEnv(): string[] {
   return dedupe(refs);
 }
 
-async function resolveTargetRef(pi: ExtensionAPI, repoRoot: string): Promise<string | null> {
+export async function resolveTargetRef(pi: ExtensionAPI, repoRoot: string): Promise<string | null> {
   for (const ref of candidateRefsFromEnv()) {
     if (await refExists(pi, repoRoot, ref)) {
       return ref;
@@ -208,6 +209,59 @@ async function resolveTargetRef(pi: ExtensionAPI, repoRoot: string): Promise<str
   }
 
   return null;
+}
+
+export async function listBranchRefs(pi: ExtensionAPI, repoRoot: string): Promise<string[]> {
+  const result = await runGitAllowFailure(pi, repoRoot, [
+    "for-each-ref",
+    "--format=%(refname:short)",
+    "--sort=-committerdate",
+    "refs/heads",
+    "refs/remotes",
+  ]);
+
+  if (!result.ok) {
+    return [];
+  }
+
+  return dedupe(
+    result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && line !== "HEAD" && !line.endsWith("/HEAD")),
+  );
+}
+
+interface ResolvedBaseSelection {
+  baseRef: string | null;
+  isExplicit: boolean;
+}
+
+async function resolveSelectedBaseRef(
+  pi: ExtensionAPI,
+  repoRoot: string,
+  selection: DiffReviewBaseSelection,
+): Promise<ResolvedBaseSelection> {
+  if (selection.kind === "ref") {
+    const ref = selection.ref.trim();
+    if (ref.length === 0) {
+      throw new Error("Base branch cannot be empty.");
+    }
+
+    if (!await refExists(pi, repoRoot, ref)) {
+      throw new Error(`Base branch not found: ${ref}`);
+    }
+
+    return {
+      baseRef: ref,
+      isExplicit: true,
+    };
+  }
+
+  return {
+    baseRef: await resolveTargetRef(pi, repoRoot),
+    isExplicit: false,
+  };
 }
 
 async function getCommitMetaMap(
@@ -362,6 +416,10 @@ async function buildFileRevisionData(options: RevisionBuildOptions): Promise<Fil
     reviewedNodeId: null,
     defaultFromNodeId: "base",
     defaultToNodeId: headNodeId,
+    baseMismatch: false,
+    baseRefChanged: false,
+    savedBaseRef: null,
+    savedBaseSha: null,
   };
 }
 
@@ -389,17 +447,22 @@ function createModeData(mode: "committed" | "working", defaults?: Partial<Review
     mode,
     available: defaults?.available ?? true,
     notice: defaults?.notice ?? null,
-    targetRef: defaults?.targetRef ?? null,
+    baseRef: defaults?.baseRef ?? null,
     baseSha: defaults?.baseSha ?? null,
     headSha: defaults?.headSha ?? null,
     files: defaults?.files ?? [],
   };
 }
 
-export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise<DiffReviewWindowData> {
+export async function getDiffReviewFiles(
+  pi: ExtensionAPI,
+  cwd: string,
+  options?: { baseSelection?: DiffReviewBaseSelection },
+): Promise<DiffReviewWindowData> {
   const repoRoot = await getRepoRoot(pi, cwd);
   const repositoryHasHead = await hasHead(pi, repoRoot);
   const headSha = repositoryHasHead ? await getHeadSha(pi, repoRoot) : null;
+  const selectedBase = await resolveSelectedBaseRef(pi, repoRoot, options?.baseSelection ?? { kind: "auto" });
 
   let committedMode = createModeData("committed", {
     available: false,
@@ -413,31 +476,35 @@ export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise
       notice: "Repository has no commits yet; committed-history mode is unavailable.",
       headSha: null,
       baseSha: null,
-      targetRef: null,
+      baseRef: selectedBase.baseRef,
       files: [],
     });
   } else {
-    const targetRef = await resolveTargetRef(pi, repoRoot);
-    if (targetRef == null) {
+    const baseRef = selectedBase.baseRef;
+    if (baseRef == null) {
       committedMode = createModeData("committed", {
         available: false,
         notice: "Could not resolve a target branch. Falling back to working-tree mode.",
         headSha,
         baseSha: null,
-        targetRef: null,
+        baseRef: null,
         files: [],
       });
     } else {
-      const mergeBaseResult = await runGitAllowFailure(pi, repoRoot, ["merge-base", targetRef, "HEAD"]);
+      const mergeBaseResult = await runGitAllowFailure(pi, repoRoot, ["merge-base", baseRef, "HEAD"]);
       const mergeBaseSha = mergeBaseResult.ok ? mergeBaseResult.stdout.trim() : "";
 
       if (!mergeBaseSha) {
+        if (selectedBase.isExplicit) {
+          throw new Error(`Could not compute merge-base between ${baseRef} and HEAD.`);
+        }
+
         committedMode = createModeData("committed", {
           available: false,
           notice: "Could not compute merge-base with target branch. Falling back to working-tree mode.",
           headSha,
           baseSha: null,
-          targetRef,
+          baseRef,
           files: [],
         });
       } else {
@@ -471,7 +538,7 @@ export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise
         committedMode = createModeData("committed", {
           available: true,
           notice: null,
-          targetRef,
+          baseRef,
           baseSha: mergeBaseSha,
           headSha,
           files,
@@ -530,7 +597,7 @@ export async function getDiffReviewFiles(pi: ExtensionAPI, cwd: string): Promise
   const workingMode = createModeData("working", {
     available: true,
     notice: workingNotice,
-    targetRef: committedMode.targetRef,
+    baseRef: committedMode.baseRef ?? selectedBase.baseRef,
     baseSha: workingBaseSha,
     headSha: workingHeadSha,
     files: workingFiles,

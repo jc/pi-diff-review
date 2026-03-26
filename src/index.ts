@@ -2,11 +2,12 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import { open, type GlimpseWindow } from "glimpseui";
 import { clearRepoReviewState, loadRepoReviewStates, saveRepoReviewState } from "./checkpoints.js";
-import { getDiffReviewFiles } from "./git.js";
+import { getDiffReviewFiles, getRepoRoot, listBranchRefs, resolveTargetRef } from "./git.js";
 import { composeReviewPrompt } from "./prompt.js";
 import { createCommitReviewState, createWorkingTreeReviewState, resolveReviewState } from "./review-state.js";
 import { spawn } from "node:child_process";
 import type {
+  DiffReviewBaseSelection,
   DiffReviewFile,
   DiffReviewWindowData,
   ReviewCancelPayload,
@@ -66,16 +67,100 @@ function collectAllFiles(data: DiffReviewWindowData): DiffReviewFile[] {
 function applyReviewStateDefaults(data: DiffReviewWindowData, reviewStates: Map<string, import("./review-state.js").ReviewStateRecord>): void {
   for (const mode of [data.modes.committed, data.modes.working]) {
     for (const file of mode.files) {
-      const resolved = resolveReviewState(file, mode.mode, reviewStates);
+      const resolved = resolveReviewState(file, mode.mode, reviewStates, {
+        baseRef: mode.baseRef,
+        baseSha: mode.baseSha,
+      });
 
       file.revision.checkpointNodeId = resolved.checkpointNodeId;
       file.revision.reviewedNodeId = resolved.reviewedNodeId;
       file.revision.defaultFromNodeId = resolved.defaultFromNodeId;
       file.revision.defaultToNodeId = resolved.defaultToNodeId;
+      file.revision.baseMismatch = resolved.baseMismatch;
+      file.revision.baseRefChanged = resolved.baseRefChanged;
+      file.revision.savedBaseRef = resolved.savedBaseRef;
+      file.revision.savedBaseSha = resolved.savedBaseSha;
 
       file.oldContent = file.revision.nodeContents[file.revision.defaultFromNodeId] ?? "";
       file.newContent = file.revision.nodeContents[file.revision.defaultToNodeId] ?? "";
     }
+  }
+}
+
+export async function promptForBaseSelection(
+  ui: Pick<ExtensionCommandContext["ui"], "select" | "input">,
+  options: {
+    autoTargetRef: string | null;
+    branchRefs: string[];
+  },
+): Promise<DiffReviewBaseSelection | null> {
+  const recentBranchLimit = 8;
+  const autoLabel = options.autoTargetRef != null
+    ? `Auto target/default branch (${options.autoTargetRef})`
+    : "Auto target/default branch";
+  const searchLabel = "Search branches…";
+  const recentBranchRefs = [...new Set(
+    [options.autoTargetRef, ...options.branchRefs].filter((value): value is string => value != null && value.length > 0),
+  )].slice(0, recentBranchLimit);
+
+  const selection = await ui.select("Select review base", [autoLabel, ...recentBranchRefs, searchLabel]);
+  if (selection == null) {
+    return null;
+  }
+
+  if (selection === autoLabel) {
+    return { kind: "auto" };
+  }
+
+  if (options.branchRefs.length === 0) {
+    throw new Error("No branches are available to choose from.");
+  }
+
+  if (selection !== searchLabel) {
+    return {
+      kind: "ref",
+      ref: selection,
+    };
+  }
+
+  while (true) {
+    const query = await ui.input("Search base branches", "Type part of a branch name");
+    if (query == null) {
+      return null;
+    }
+
+    const normalizedQuery = query.trim().toLowerCase();
+    if (normalizedQuery.length === 0) {
+      continue;
+    }
+
+    const exactMatch = options.branchRefs.find((ref) => ref.toLowerCase() === normalizedQuery);
+    if (exactMatch != null) {
+      return {
+        kind: "ref",
+        ref: exactMatch,
+      };
+    }
+
+    const matches = options.branchRefs.filter((ref) => ref.toLowerCase().includes(normalizedQuery));
+
+    if (matches.length === 0) {
+      const retry = await ui.select(`No branches found for “${query.trim()}”`, ["Search again…", "Cancel"]);
+      if (retry !== "Search again…") {
+        return null;
+      }
+      continue;
+    }
+
+    const narrowed = await ui.select(`Choose base branch (${matches.length} match${matches.length === 1 ? "" : "es"})`, matches);
+    if (narrowed == null) {
+      return null;
+    }
+
+    return {
+      kind: "ref",
+      ref: narrowed,
+    };
   }
 }
 
@@ -307,7 +392,26 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const fullReviewData = await getDiffReviewFiles(pi, ctx.cwd);
+    let fullReviewData: DiffReviewWindowData;
+
+    try {
+      const repoRoot = await getRepoRoot(pi, ctx.cwd);
+      const autoTargetRef = await resolveTargetRef(pi, repoRoot);
+      const branchRefs = await listBranchRefs(pi, repoRoot);
+      const baseSelection = await promptForBaseSelection(ctx.ui, { autoTargetRef, branchRefs });
+
+      if (baseSelection == null) {
+        ctx.ui.notify("Diff review cancelled.", "info");
+        return;
+      }
+
+      fullReviewData = await getDiffReviewFiles(pi, repoRoot, { baseSelection });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Diff review failed: ${message}`, "error");
+      return;
+    }
+
     const reviewStates = await loadRepoReviewStates(fullReviewData.repoRoot);
     applyReviewStateDefaults(fullReviewData, reviewStates);
 
@@ -370,12 +474,17 @@ export default function (pi: ExtensionAPI) {
             const file = findFileByModeAndId(fullReviewData, message.mode, message.fileId);
             if (!file) return;
 
+            const reviewScope = {
+              baseRef: fullReviewData.modes[message.mode].baseRef,
+              baseSha: fullReviewData.modes[message.mode].baseSha,
+            };
+
             const toNode = file.revision.nodes.find((node) => node.id === message.toNodeId);
             if (!toNode || toNode.kind === "base") return;
 
             const reviewState = toNode.kind === "commit"
-              ? createCommitReviewState(toNode.sha)
-              : createWorkingTreeReviewState(file);
+              ? createCommitReviewState(toNode.sha, reviewScope)
+              : createWorkingTreeReviewState(file, reviewScope);
 
             saveRepoReviewState(fullReviewData.repoRoot, file.fileKey, reviewState).catch((error) => {
               const text = error instanceof Error ? error.message : String(error);

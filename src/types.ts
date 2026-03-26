@@ -1,6 +1,17 @@
 export type ChangeStatus = "modified" | "added" | "deleted" | "renamed";
 export type ReviewMode = "committed" | "working";
 
+export interface DiffReviewAutoBaseSelection {
+  kind: "auto";
+}
+
+export interface DiffReviewRefBaseSelection {
+  kind: "ref";
+  ref: string;
+}
+
+export type DiffReviewBaseSelection = DiffReviewAutoBaseSelection | DiffReviewRefBaseSelection;
+
 export interface FileRevisionBaseNode {
   id: "base";
   kind: "base";
@@ -32,6 +43,10 @@ export interface FileRevisionData {
   reviewedNodeId: string | null;
   defaultFromNodeId: string;
   defaultToNodeId: string;
+  baseMismatch: boolean;
+  baseRefChanged: boolean;
+  savedBaseRef: string | null;
+  savedBaseSha: string | null;
 }
 
 export interface DiffReviewFile {
@@ -50,7 +65,7 @@ export interface ReviewModeData {
   mode: ReviewMode;
   available: boolean;
   notice: string | null;
-  targetRef: string | null;
+  baseRef: string | null;
   baseSha: string | null;
   headSha: string | null;
   files: DiffReviewFile[];

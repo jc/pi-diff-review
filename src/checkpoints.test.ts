@@ -95,6 +95,8 @@ test("saveRepoReviewState persists version 2 dual review-state records", async (
       newPath: "src/a.ts",
       contentHash: "hash-123",
     },
+    baseRef: "origin/main",
+    baseSha: "base-123",
   });
 
   const reviewStates = await loadRepoReviewStates(repoRoot);
@@ -104,4 +106,30 @@ test("saveRepoReviewState persists version 2 dual review-state records", async (
   assert.equal(rawStore.version, 2);
   assert.equal(persisted?.commitSha, "c3");
   assert.equal(persisted?.workingTree?.contentHash, "hash-123");
+  assert.equal(persisted?.baseRef, "origin/main");
+  assert.equal(persisted?.baseSha, "base-123");
+});
+
+test("loadRepoReviewStates treats missing base metadata as unknown legacy scope", async () => {
+  const dir = await createCheckpointDir();
+  const path = join(dir, `${repoHash(repoRoot)}.json`);
+
+  await writeFile(path, `${JSON.stringify({
+    version: 2,
+    updatedAt: "2026-03-24T00:00:00.000Z",
+    files: {
+      "src/a.ts=>src/a.ts": {
+        commitSha: "c3",
+        updatedAt: "2026-03-24T00:00:00.000Z",
+        workingTree: null,
+      },
+    },
+  }, null, 2)}\n`);
+
+  const reviewStates = await loadRepoReviewStates(repoRoot);
+  const record = reviewStates.get("src/a.ts=>src/a.ts");
+
+  assert.equal(record?.commitSha, "c3");
+  assert.equal(record?.baseRef, null);
+  assert.equal(record?.baseSha, null);
 });
